@@ -30,6 +30,12 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
             """)
     boolean existsActive(@Param("userId") Long userId, @Param("showId") Long showId);
 
+    @Query("""
+            SELECT h.id FROM SeatHold h
+            WHERE h.user.id = :userId AND h.show.id = :showId AND h.status = com.seatsure.entity.SeatHold.Status.ACTIVE
+            """)
+    Optional<Long> findActiveId(@Param("userId") Long userId, @Param("showId") Long showId);
+
     /**
      * Claims expired holds for the expiry job. SKIP LOCKED: a hold being paid for right now (its
      * row is locked by the payment confirmation) is skipped, and several instances can run the job.

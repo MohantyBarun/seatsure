@@ -1,7 +1,7 @@
 import { apiRequest, newIdempotencyKey } from './client';
 import type {
-  AdminBookingView, AdminMovie, AdminShowView, BookingView, CinemaView, City, Dashboard, Home, HoldView, MovieDetail, MovieRequest,
-  NotificationFeed, Paged, PaymentStarted, RowSpec, ScreenView, SeatMap, ShowDetail, ShowRequest, Showtimes,
+  AdminBookingView, AdminMovie, AdminShowView, BestSeats, BookingView, CinemaView, City, Dashboard, Home, HoldView, MovieDetail, MovieRequest,
+  NotificationFeed, Paged, PaymentStarted, RowSpec, ScreenView, SeatCategory, SeatMap, ShowDetail, ShowRequest, Showtimes,
   SystemSnapshot, TokenResponse, UserView, WaitlistView,
 } from './types';
 
@@ -29,11 +29,18 @@ export const catalogApi = {
     apiRequest<Showtimes>(`/movies/${movieId}/showtimes`, { auth: false, query: { cityId, date } }),
   show: (showId: number) => apiRequest<ShowDetail>(`/shows/${showId}`, { auth: false }),
   seats: (showId: number) => apiRequest<SeatMap>(`/shows/${showId}/seats`, { auth: false }),
+  bestSeats: (showId: number, count: number, category?: SeatCategory) =>
+    apiRequest<BestSeats>(`/shows/${showId}/best-seats`, { auth: false, query: { count, category } }),
 };
 
 export const checkoutApi = {
   hold: (showId: number, seatIds: number[]) =>
     apiRequest<HoldView>(`/shows/${showId}/holds`, { method: 'POST', body: { seatIds }, idempotencyKey: newIdempotencyKey() }),
+  /** The server picks the best seats and holds them in one request. */
+  holdBest: (showId: number, count: number, category?: SeatCategory) =>
+    apiRequest<HoldView>(`/shows/${showId}/holds/best`, {
+      method: 'POST', body: { count, category: category ?? null }, idempotencyKey: newIdempotencyKey(),
+    }),
   get: (holdId: number) => apiRequest<HoldView>(`/holds/${holdId}`),
   release: (holdId: number) => apiRequest<void>(`/holds/${holdId}`, { method: 'DELETE' }),
   pay: (holdId: number) =>

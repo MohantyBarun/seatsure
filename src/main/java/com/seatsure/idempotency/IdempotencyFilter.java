@@ -50,7 +50,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
     private static final Pattern VALID_KEY = Pattern.compile("^[A-Za-z0-9_\\-:.]{8,100}$");
     private static final List<String> IDEMPOTENT_POST_PATHS =
-            List.of("/shows/*/holds", "/holds/*/payments", "/shows/*/waitlist", "/bookings/*/cancel", "/admin/movies", "/admin/cinemas", "/admin/cinemas/*/screens",
+            List.of("/shows/*/holds", "/shows/*/holds/best", "/holds/*/payments", "/shows/*/waitlist", "/bookings/*/cancel", "/admin/movies", "/admin/cinemas", "/admin/cinemas/*/screens",
                     "/admin/shows", "/admin/shows/*/cancel");
     private static final AntPathMatcher PATHS = new AntPathMatcher();
 

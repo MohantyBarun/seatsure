@@ -8,6 +8,7 @@ import com.seatsure.payment.PaymentService;
 import com.seatsure.realtime.SeatStreams;
 import com.seatsure.payment.PaymentWebhookService;
 import com.seatsure.payment.mock.MockPaymentGateway;
+import com.seatsure.service.BestSeatService;
 import com.seatsure.service.HoldService;
 import com.seatsure.service.WaitlistService;
 import com.seatsure.service.MovieAdminService;
@@ -59,6 +60,7 @@ class AccessRulesTest {
     @MockitoBean private ShowScheduleService showSchedule;
     @MockitoBean private DashboardService dashboard;
     @MockitoBean private HoldService holds;
+    @MockitoBean private BestSeatService bestSeats;
     @MockitoBean private PaymentService payments;
     @MockitoBean private MockPaymentGateway mockGateway;
     @MockitoBean private PaymentWebhookService webhooks;
@@ -70,6 +72,7 @@ class AccessRulesTest {
         mockMvc.perform(get("/cities")).andExpect(status().isOk());
         mockMvc.perform(get("/movies/1/showtimes").param("cityId", "1")).andExpect(status().isOk());
         mockMvc.perform(get("/shows/1/seats")).andExpect(status().isOk());
+        mockMvc.perform(get("/shows/1/best-seats").param("count", "3")).andExpect(status().isOk());
         when(seatStreams.subscribe(1L)).thenReturn(new org.springframework.web.servlet.mvc.method.annotation.SseEmitter());
         mockMvc.perform(get("/shows/1/seats/stream")).andExpect(status().isOk());
     }
@@ -130,6 +133,21 @@ class AccessRulesTest {
         mockMvc.perform(post("/shows/1/holds").header("Authorization", admin(jwtUtil))
                         .contentType(MediaType.APPLICATION_JSON).content(HOLD_BODY))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("'pick for me' is for customers: 401 without a token, 403 for admins, 400 for more than 10 seats")
+    void holdBest_isForCustomers() throws Exception {
+        String body = "{\"count\":2}";
+        mockMvc.perform(post("/shows/1/holds/best").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/shows/1/holds/best").header("Authorization", admin(jwtUtil))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/shows/1/holds/best").header("Authorization", customer(jwtUtil))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"count\":11}"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/shows/1/best-seats").param("count", "0")).andExpect(status().isBadRequest());
     }
 
     @Test

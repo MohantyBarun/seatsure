@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { catalogApi, checkoutApi } from '../api/endpoints';
-import type { SeatMap, SeatView, ShowDetail } from '../api/types';
+import type { SeatMap, SeatSuggestion, SeatView, ShowDetail } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { BestSeatsPanel } from '../components/BestSeatsPanel';
 import { Poster } from '../components/Poster';
 import { SeatGrid, SeatLegend } from '../components/SeatGrid';
 import { Alert, LoadingBlock, Spinner } from '../components/ui';
@@ -148,6 +149,12 @@ export function SeatsPage() {
     });
   }, []);
 
+  const showSuggestion = useCallback((suggestion: SeatSuggestion) => {
+    setNotice(null);
+    setHoldError(null);
+    setSelected(new Set(suggestion.seatIds));
+  }, []);
+
   const picked = [...selected].map((id) => index.get(id)).filter((p): p is SeatInfo => Boolean(p));
   const total = map ? picked.reduce((sum, p) => sum + priceOf(map.prices, p.category), 0) : 0;
 
@@ -187,6 +194,10 @@ export function SeatsPage() {
           </Alert>
         )}
         {soldOut && <WaitlistPanel showId={showId} />}
+        {map && map.bookable && !soldOut && (
+          <BestSeatsPanel showId={showId} prices={map.prices} selected={selected} onPick={showSuggestion}
+                          onHolding={setHolding} />
+        )}
         {notice && <Alert kind="warn">{notice}</Alert>}
 
         {!map ? (!mapError && <LoadingBlock label="Loading the seat map…" />) : (

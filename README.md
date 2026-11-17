@@ -28,7 +28,7 @@ SeatSure solves each of these, and every guarantee is tested against real Postgr
 ## 🧭 How a booking works
 
 1. **Browse:** pick a city, a movie, a date and a showtime. This is public, cached, and needs no account.
-2. **Pick seats** on a seat map that updates live over Server-Sent Events.
+2. **Pick seats** on a seat map that updates live over Server-Sent Events, or say how many you need and let SeatSure **find the best ones and hold them** in one click.
 3. **Hold:** the chosen seats are locked and marked held for **10 minutes**. It's all or nothing: if any seat was taken first, nothing is held and the response lists the taken seats.
 4. **Pay** on the mock gateway's page ("SeatSure Test Pay": approve or decline).
 5. **Webhook:** the gateway sends a signed webhook, retried until acknowledged. The hold becomes a booking, the seats become booked, and a ticket email goes out.
@@ -64,6 +64,12 @@ flowchart LR
 - **Expired holds** are swept every 10 seconds, each in its own transaction. Locking several holds' seats at once would take them out of id order and could deadlock with customers.
 - Choosing seats again for the same show replaces your hold: seats you keep stay yours, and the others are freed.
 - **Tested with real PostgreSQL:** 30 customers grabbing the same seat at once gives exactly one winner; overlapping multi-seat requests in random order never hold a seat twice and never deadlock; a show cancelled while customers are holding seats ends with nothing held.
+
+### Best seats ("pick for me")
+- Say how many seats you need (and optionally a category). Every block of that many free seats **side by side in one row** is scored out of 100: **45%** for how central it is, **45%** for how close the row is to about two-thirds of the way back from the screen, and **10%** for not leaving a single free seat stranded beside it. An aisle or a taken seat breaks a block.
+- `GET /shows/{id}/best-seats` returns the best block of up to three rows with the score and the reasons, and the page shows them on the seat map. `POST /shows/{id}/holds/best` **picks and holds in one request**.
+- **Choosing takes no locks.** The hall is read, the best block is chosen, and the ordinary hold then locks exactly those seats and checks them. If another customer took one in between, that transaction rolls back and the server reads the hall again and takes the next best block (up to 5 times). So it follows the same locking rules as picking by hand: it can't hold a seat twice and can't deadlock.
+- The scoring is a pure function (`BestSeatPicker`) with no database or framework in it, so it is unit-tested directly.
 
 ### Payments and webhooks
 - Starting a payment only registers it with the gateway. The outcome arrives later as a webhook **signed with HMAC-SHA256** (`SeatSure-Signature` header).
@@ -153,7 +159,7 @@ com.seatsure
 | | Customer | Admin |
 |---|---|---|
 | **Browse** | City picker, now showing with language/genre filters, coming soon, movie details, date strip, showtimes by cinema with availability | All movies, cinemas and screens |
-| **Book** | Live seat map (Recliner / Prime / Classic), up to 10 seats, 10-minute hold with a countdown, mock payment, ticket with reference | — |
+| **Book** | Live seat map (Recliner / Prime / Classic), "pick for me" best seats with a score and one-click hold, up to 10 seats, 10-minute hold with a countdown, mock payment, ticket with reference | — |
 | **After booking** | My bookings, cancel up to 2 hours before for a refund | Latest bookings across all cinemas |
 | **Sold out** | Waitlist (1–6 seats), place in line, "Pay now" when seats are offered | — |
 | **Manage** | Account, change password | Add/edit movies, add cinemas, build a screen's seat layout (rows, categories, aisles), schedule shows (no overlaps on a screen, plus 15 minutes to clean), cancel a show (every booking refunded and emailed) |
@@ -175,9 +181,9 @@ Full, interactive docs: **[Swagger UI](https://student-service-w3vr.onrender.com
 
 | Area | Endpoints | Access |
 |---|---|---|
-| Browse | `GET /cities`, `/cities/{id}/home`, `/movies/{id}`, `/movies/{id}/showtimes?cityId=&date=`, `/shows/{id}`, `/shows/{id}/seats` | Public |
+| Browse | `GET /cities`, `/cities/{id}/home`, `/movies/{id}`, `/movies/{id}/showtimes?cityId=&date=`, `/shows/{id}`, `/shows/{id}/seats`, `/shows/{id}/best-seats?count=&category=` | Public |
 | Live seats | `GET /shows/{id}/seats/stream` (SSE: `ready`, `seats`, `reload`) | Public |
-| Checkout | `POST /shows/{id}/holds`, `GET`/`DELETE /holds/{id}`, `POST /holds/{id}/payments`, `POST /mock-gateway/payments/{ref}` | Customer |
+| Checkout | `POST /shows/{id}/holds`, `POST /shows/{id}/holds/best`, `GET`/`DELETE /holds/{id}`, `POST /holds/{id}/payments`, `POST /mock-gateway/payments/{ref}` | Customer |
 | Webhook | `POST /webhooks/payments` (HMAC signature instead of a JWT) | Gateway |
 | Bookings | `GET /bookings/me`, `GET /bookings/{ref}`, `POST /bookings/{ref}/cancel` | Customer (admins can view any) |
 | Waitlist | `POST /shows/{id}/waitlist`, `GET /waitlist/me`, `DELETE /waitlist/{id}` | Customer |
@@ -243,6 +249,7 @@ CI runs everything on every push and PR, and **fails if any test is skipped**, s
 | Area | What's covered |
 |---|---|
 | Concurrency (Testcontainers PostgreSQL) | 30 customers racing for one seat → one winner; overlapping seat sets → no double holds, no deadlocks; all-or-nothing holds; holds replaced and expired; show cancellation racing holds |
+| Best seats | Scoring rules as plain unit tests (centre, distance, aisles, stranded seats, category filter); suggestions and one-click hold over HTTP; 20 customers asking for the best pair at the same moment each get their own pair, side by side |
 | Payments | Unsigned or forged webhooks refused, redelivered events processed once, a second success for a paid payment ignored, money arriving after the hold lapsed refunded, a wrong amount refunded (exactly what was taken) and never booked |
 | Live seat map | A hold shows up on open seat maps and a failed hold never does; a cancelled show tells maps to reload; killing the `LISTEN` connection makes open maps reload once it's back |
 | Waitlist | Only for sold-out shows; freed seats offered to the first customer whose request fits, passing to the next if unpaid; cancelled bookings' seats go to the queue |
@@ -250,7 +257,7 @@ CI runs everything on every push and PR, and **fails if any test is skipped**, s
 | Idempotency, rate limiting, cache (Redis) | Replays, 409/422 conflicts, reclaiming abandoned keys, limits per rule, forged `X-Forwarded-For` sharing the real client's budget, 429 through the real filter chain, fail-open |
 | Auth | Token rotation and reuse detection, escalating lockouts that never become permanent, role-based access, demo-admin masking |
 | Scheduling | A once-per-cluster job run again inside its lock window is skipped (ShedLock) |
-| Frontend | API client (refresh rotation, retries), live seat map hook against a fake `EventSource`, and the booking flow: city picker, seat selection, hold conflicts, waitlist, checkout and webhook polling, cancel, route guards, demo login |
+| Frontend | API client (refresh rotation, retries), live seat map hook against a fake `EventSource`, and the booking flow: city picker, seat selection, best-seat suggestions and one-click hold, hold conflicts, waitlist, checkout and webhook polling, cancel, route guards, demo login |
 
 ## ☁️ Deployment (free tier)
 

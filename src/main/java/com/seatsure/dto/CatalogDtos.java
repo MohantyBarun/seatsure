@@ -79,4 +79,13 @@ public final class CatalogDtos {
     public record SeatMap(Long showId, boolean bookable, int maxCol, long available, long total,
                           List<PriceView> prices, List<SeatRow> rows) {
     }
+
+    /** Free seats side by side in one row; score is out of 100 and reasons say what earned it. */
+    public record SeatSuggestion(String rowLabel, SeatCategory category, List<Long> seatIds, List<String> labels,
+                                 int score, List<String> reasons, int ticketsPaise) {
+    }
+
+    /** The best places to sit right now, best first: at most one per row. Empty if no row fits the group. */
+    public record BestSeats(Long showId, int count, SeatCategory category, List<SeatSuggestion> suggestions) {
+    }
 }

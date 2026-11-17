@@ -41,6 +41,14 @@ public interface ShowSeatRepository extends JpaRepository<ShowSeat, Long> {
     @Query("SELECT ss FROM ShowSeat ss JOIN FETCH ss.seat WHERE ss.show.id = :showId")
     List<ShowSeat> findSeatMap(@Param("showId") Long showId);
 
+    /** The hall as plain values, for choosing the best free seats. Takes no locks. */
+    @Query("""
+            SELECT new com.seatsure.repository.SeatSlot(s.id, s.rowLabel, s.seatNumber, s.gridCol, s.category,
+                   ss.status, ss.hold.id)
+            FROM ShowSeat ss JOIN ss.seat s WHERE ss.show.id = :showId
+            """)
+    List<SeatSlot> findSlots(@Param("showId") Long showId);
+
     @Query("""
             SELECT COUNT(ss) FROM ShowSeat ss
             WHERE ss.show.id = :showId AND ss.status = com.seatsure.entity.ShowSeatStatus.AVAILABLE

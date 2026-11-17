@@ -1,7 +1,10 @@
 package com.seatsure.controller;
 
 import com.seatsure.dto.CatalogDtos.*;
+import com.seatsure.dto.CheckoutDtos;
+import com.seatsure.entity.SeatCategory;
 import com.seatsure.realtime.SeatStreams;
+import com.seatsure.service.BestSeatService;
 import com.seatsure.service.CatalogService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -10,6 +13,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
@@ -26,6 +31,7 @@ public class CatalogController {
 
     private final CatalogService catalog;
     private final SeatStreams seatStreams;
+    private final BestSeatService bestSeats;
 
     @Operation(summary = "Cities with cinemas")
     @GetMapping("/cities")
@@ -65,6 +71,17 @@ public class CatalogController {
     @GetMapping("/shows/{showId}/seats")
     public SeatMap seats(@PathVariable Long showId) {
         return catalog.seatMap(showId);
+    }
+
+    @Operation(summary = "The best free seats for a group, best first",
+            description = "Scores every block of `count` free seats side by side: how central it is, how close the row "
+                    + "is to the ideal distance from the screen, and whether it would strand a single seat. Returns the "
+                    + "best block of up to three rows. Nothing is reserved; POST /shows/{id}/holds/best picks and holds.")
+    @GetMapping("/shows/{showId}/best-seats")
+    public BestSeats bestSeats(@PathVariable Long showId,
+                               @RequestParam(defaultValue = "2") @Min(1) @Max(CheckoutDtos.MAX_SEATS) int count,
+                               @RequestParam(required = false) SeatCategory category) {
+        return bestSeats.suggest(showId, count, category);
     }
 
     @Operation(summary = "Live seat changes (Server-Sent Events)",
