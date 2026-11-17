@@ -9,6 +9,7 @@ import com.seatsure.exception.ConflictException;
 import com.seatsure.exception.ResourceNotFoundException;
 import com.seatsure.exception.SeatsUnavailableException;
 import com.seatsure.realtime.SeatEvents;
+import com.seatsure.scheduling.HoldExpiries;
 import com.seatsure.repository.*;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -49,6 +50,7 @@ public class HoldService {
     private final Pricing pricing;
     private final WaitlistService waitlist;
     private final SeatEvents seatEvents;
+    private final HoldExpiries expiries;
     private final Clock clock;
     private final Duration ttl;
     private final TransactionTemplate tx;
@@ -56,7 +58,7 @@ public class HoldService {
 
     public HoldService(ShowRepository shows, ShowSeatRepository showSeats, SeatHoldRepository holds,
                        PaymentRepository payments, UserRepository users, Pricing pricing, WaitlistService waitlist,
-                       SeatEvents seatEvents,
+                       SeatEvents seatEvents, HoldExpiries expiries,
                        Clock clock, @Value("${app.holds.ttl:PT10M}") Duration ttl,
                        PlatformTransactionManager transactionManager, MeterRegistry meters) {
         this.shows = shows;
@@ -67,6 +69,7 @@ public class HoldService {
         this.pricing = pricing;
         this.waitlist = waitlist;
         this.seatEvents = seatEvents;
+        this.expiries = expiries;
         this.clock = clock;
         this.ttl = ttl;
         this.tx = new TransactionTemplate(transactionManager);
@@ -126,6 +129,7 @@ public class HoldService {
         SeatHold hold = new SeatHold(show, users.getReferenceById(userId), SeatHold.Source.CUSTOMER, now, now.plus(ttl));
         hold.price(wanted.size(), quote.ticketsPaise(), quote.feePaise());
         holds.save(hold);
+        expiries.expect(hold.getExpiresAt());
         wanted.forEach(ss -> ss.hold(hold));
         seatEvents.seatsChanged(showId, wanted); // broadcast on commit
         log.info("Hold {} created: {} seat(s) of show {} until {}", hold.getId(), wanted.size(), showId, hold.getExpiresAt());
@@ -165,10 +169,22 @@ public class HoldService {
     }
 
     /**
+     * Every 10 seconds, but only touches the database when a hold is due to expire (see
+     * {@link HoldExpiries}): an idle site lets the database go to sleep.
+     */
+    @Scheduled(fixedDelayString = "${app.holds.expiry-interval:PT10S}", initialDelayString = "${app.holds.expiry-initial-delay:PT20S}")
+    public void expireWhenDue() {
+        if (!expiries.claim()) {
+            return;
+        }
+        expireDue();
+        expiries.swept(Optional.ofNullable(holds.nextExpiry()));
+    }
+
+    /**
      * Expires lapsed holds. Each hold in its own transaction: locking the seats of several holds in
      * one transaction would lock seats out of id order and could deadlock with customers.
      */
-    @Scheduled(fixedDelayString = "${app.holds.expiry-interval:PT10S}", initialDelayString = "${app.holds.expiry-initial-delay:PT20S}")
     public int expireDue() {
         int count = 0;
         while (count < 500) {

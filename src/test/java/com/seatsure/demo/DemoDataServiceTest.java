@@ -49,7 +49,7 @@ class DemoDataServiceTest {
 
     @Test
     void seed_createsAConsistentDemoDataset() {
-        demo.seedIfEmpty();
+        demo.seedIfEmptyOrStale();
 
         assertThat(count("SELECT COUNT(*) FROM cinemas")).isEqualTo(8);
         assertThat(count("SELECT COUNT(*) FROM screens")).isEqualTo(16);
@@ -82,9 +82,24 @@ class DemoDataServiceTest {
 
     @Test
     void seed_isIdempotent() {
-        demo.seedIfEmpty();
-        demo.seedIfEmpty();
+        demo.seedIfEmptyOrStale();
+        demo.seedIfEmptyOrStale();
 
+        assertThat(count("SELECT COUNT(*) FROM cinemas")).isEqualTo(8);
+        assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(10);
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("demo data whose shows have run out is reseeded at startup")
+    void staleData_isReseeded() {
+        demo.seedIfEmptyOrStale();
+        // What two weeks asleep does to the demo: every show is in the past
+        jdbc.update("UPDATE shows SET starts_at = starts_at - interval '14 days', ends_at = ends_at - interval '14 days'");
+        assertThat(count("SELECT COUNT(*) FROM shows WHERE starts_at > now() + interval '1 day'")).isZero();
+
+        demo.seedIfEmptyOrStale();
+
+        assertThat(count("SELECT COUNT(*) FROM shows WHERE starts_at > now() + interval '1 day'")).isPositive();
         assertThat(count("SELECT COUNT(*) FROM cinemas")).isEqualTo(8);
         assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(10);
     }
@@ -93,7 +108,7 @@ class DemoDataServiceTest {
     void reset_reseedsAndKeepsAdmins() {
         User realAdmin = users.save(new User("Real Admin", "real.admin@seatsure.test", "x", Roles.ROLE_ADMIN));
         loginSecurity.save(new LoginSecurity(realAdmin));
-        demo.seedIfEmpty();
+        demo.seedIfEmptyOrStale();
         long showsBefore = count("SELECT COUNT(*) FROM shows");
 
         demo.reset();

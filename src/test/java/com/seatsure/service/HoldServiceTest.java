@@ -56,8 +56,10 @@ class HoldServiceTest {
 
     @BeforeEach
     void setUp() {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         service = new HoldService(shows, showSeats, holds, payments, users, new Pricing(prices, 2500), waitlist, seatEvents,
-                Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofMinutes(10), transactionManager, new SimpleMeterRegistry());
+                new com.seatsure.scheduling.HoldExpiries(clock, Duration.ofHours(1)),
+                clock, Duration.ofMinutes(10), transactionManager, new SimpleMeterRegistry());
 
         Screen screen = new Screen(new Cinema(new City("Pune", "Maharashtra"), "Starlight", "Somewhere"), "Audi 1");
         Movie movie = new Movie("Monsoon Protocol", "A heist.", 150, "Hindi", Certificate.UA, List.of("Thriller"),

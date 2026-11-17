@@ -6,6 +6,7 @@ import com.seatsure.entity.ShowSeatStatus;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -24,6 +25,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * and browsers reconnect on their own.
  *
  * <p>Servlet async: an open stream holds no request thread, only a socket.
+ *
+ * <p><b>"ready" means changes are being listened for.</b> The client fetches the seat map when it
+ * gets "ready" and patches it with the events that follow, so "ready" must never come before the
+ * database LISTEN is active, or a change committed in between would be lost. The listener only
+ * holds its connection while someone has a seat map open (so an idle site lets the database
+ * sleep); a stream opened while it isn't connected waits, and gets "ready" once it is
+ * ({@link #listenerUp}).
  */
 @Slf4j
 @Component
@@ -39,8 +47,20 @@ public class SeatStreams {
     }
 
     private final Map<Long, Set<SseEmitter>> byShow = new ConcurrentHashMap<>();
+    /** Streams opened while the listener wasn't connected: they get "ready" when it is. */
+    private final Map<SseEmitter, Long> waiting = new ConcurrentHashMap<>();
+    /** Guards {@link #live} together with sending "ready", so no stream misses the switch. */
+    private final Object gate = new Object();
+    /** Signalled when a stream opens, to wake the listener. */
+    private final Object demand = new Object();
+    private final boolean realtimeEnabled;
+    private boolean live;
 
-    public SeatStreams(MeterRegistry meters) {
+    public record ListenerUp(int readied, int reloaded) {
+    }
+
+    public SeatStreams(MeterRegistry meters, @Value("${app.realtime.enabled:true}") boolean realtimeEnabled) {
+        this.realtimeEnabled = realtimeEnabled;
         Gauge.builder("seatmap.streams.open", this, SeatStreams::openStreams)
                 .description("Seat-map SSE streams open on this instance").register(meters);
     }
@@ -51,14 +71,82 @@ public class SeatStreams {
         watchers.add(emitter);
         Runnable remove = () -> {
             watchers.remove(emitter);
+            waiting.remove(emitter);
             byShow.computeIfPresent(showId, (id, set) -> set.isEmpty() ? null : set);
         };
         emitter.onCompletion(remove);
         emitter.onTimeout(remove);
         emitter.onError(e -> remove.run());
-        // Tells the client the stream is live; it then fetches the map (and applies events after it)
-        send(emitter, SseEmitter.event().name("ready").data(Map.of("showId", showId)), remove);
+        synchronized (gate) {
+            if (live || !realtimeEnabled) {
+                sendReady(emitter, showId, remove);
+            } else {
+                waiting.put(emitter, showId);
+            }
+        }
+        synchronized (demand) {
+            demand.notifyAll();
+        }
         return emitter;
+    }
+
+    /** Tells the client the stream is live; it then fetches the map (and applies events after it). */
+    private void sendReady(SseEmitter emitter, Long showId, Runnable onFailure) {
+        send(emitter, SseEmitter.event().name("ready").data(Map.of("showId", showId)), onFailure);
+    }
+
+    /** True while at least one seat map is open on this instance. */
+    public boolean hasWatchers() {
+        return !byShow.isEmpty();
+    }
+
+    /** Blocks until a seat map is open (true) or {@code max} has passed (false). */
+    public boolean awaitWatchers(Duration max) {
+        synchronized (demand) {
+            if (byShow.isEmpty()) {
+                try {
+                    demand.wait(max.toMillis());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return !byShow.isEmpty();
+        }
+    }
+
+    /**
+     * The listener's LISTEN is active. Streams that were waiting get "ready" (they now fetch the
+     * map). Streams that were already open get "reload": changes committed while the listener was
+     * down were never delivered, so their maps can't be patched, only refetched.
+     */
+    public ListenerUp listenerUp() {
+        synchronized (gate) {
+            live = true;
+            int[] counts = {0, 0};
+            byShow.forEach((showId, watchers) -> watchers.forEach(emitter -> {
+                Runnable drop = () -> watchers.remove(emitter);
+                if (waiting.remove(emitter) != null) {
+                    sendReady(emitter, showId, drop);
+                    counts[0]++;
+                } else {
+                    send(emitter, SseEmitter.event().name("reload").data(Map.of("showId", showId)), drop);
+                    counts[1]++;
+                }
+            }));
+            return new ListenerUp(counts[0], counts[1]);
+        }
+    }
+
+    /** The listener's connection is gone: new streams wait for it before getting "ready". */
+    public void listenerDown() {
+        synchronized (gate) {
+            live = false;
+        }
+    }
+
+    int waitingStreams() {
+        return waiting.size();
     }
 
     /** Fans a committed change out to this instance's watchers of the show. */
@@ -81,21 +169,6 @@ public class SeatStreams {
         }
     }
 
-    /**
-     * Tells every open seat map to refetch. Used after the LISTEN connection comes back: changes
-     * committed while it was down were never delivered, so the maps can't be patched, only reloaded.
-     */
-    public int reloadAll() {
-        int[] sent = {0};
-        byShow.forEach((showId, watchers) -> {
-            SseEmitter.SseEventBuilder event = SseEmitter.event().name("reload").data(Map.of("showId", showId));
-            watchers.forEach(emitter -> {
-                send(emitter, event, () -> watchers.remove(emitter));
-                sent[0]++;
-            });
-        });
-        return sent[0];
-    }
 
     /**
      * On shutdown (a deploy), end every stream first. Graceful shutdown waits for in-flight requests,
@@ -107,6 +180,7 @@ public class SeatStreams {
     public void closeAll() {
         byShow.values().forEach(watchers -> watchers.forEach(SseEmitter::complete));
         byShow.clear();
+        waiting.clear();
     }
 
     /** A comment line every 20 seconds, so proxies don't close streams that are quiet. */

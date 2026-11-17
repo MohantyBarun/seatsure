@@ -16,7 +16,7 @@ import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Seeds demo data on startup and, if app.demo.reset-cron is set (e.g. "0 0 3 * * *"),
+ * Seeds demo data on startup (or reseeds it if its shows have run out) and, if app.demo.reset-cron is set (e.g. "0 0 3 * * *"),
  * resets it on that schedule so changes made by visitors don't accumulate. Cron "-" disables the reset.
  *
  * <p>Both run once across instances: two instances seeding an empty database at the same time, or
@@ -40,7 +40,7 @@ public class DemoScheduler implements ApplicationRunner {
         AtomicBoolean ran = new AtomicBoolean();
         locks.executeWithLock((Runnable) () -> {
             ran.set(true);
-            demo.seedIfEmpty();
+            demo.seedIfEmptyOrStale();
         }, new LockConfiguration(clock.instant(), "demo-seed", SEED_LOCK_AT_MOST, Duration.ZERO));
         if (!ran.get()) {
             log.info("Demo mode: another instance is seeding; skipping");

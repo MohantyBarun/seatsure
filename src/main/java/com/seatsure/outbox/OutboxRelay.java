@@ -4,6 +4,7 @@ import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import java.time.Clock;
 import com.seatsure.entity.OutboxEvent;
 import com.seatsure.repository.OutboxEventRepository;
+import com.seatsure.scheduling.DueWork;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -20,10 +21,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Moves outbox events to the transport. Runs right after a business transaction commits and, as a
  * safety net, on a schedule (picks up retries and anything missed, e.g. after a crash or restart).
+ * The schedule only queries the database when a retry is due, or at the hourly safety sweep
+ * ({@link DueWork}), so an idle site lets the database sleep.
  */
 @Slf4j
 @Component
@@ -40,6 +44,7 @@ public class OutboxRelay {
     private final Counter retried;
     private final Counter deadLettered;
     private final Clock clock;
+    private final DueWork due;
 
     public OutboxRelay(OutboxEventRepository outboxRepository,
                        OutboxTransport transport,
@@ -49,7 +54,8 @@ public class OutboxRelay {
                        @Value("${app.outbox.max-attempts:10}") int maxAttempts,
                        @Value("${app.outbox.retention:P7D}") Duration retention,
                        @Value("${app.outbox.claim-lease:PT5M}") Duration claimLease,
-                       Clock clock) {
+                       Clock clock,
+                       @Value("${app.jobs.idle-sweep:PT1H}") Duration idleSweep) {
         this.outboxRepository = outboxRepository;
         this.transport = transport;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
@@ -58,6 +64,7 @@ public class OutboxRelay {
         this.retention = retention;
         this.claimLease = claimLease;
         this.clock = clock;
+        this.due = new DueWork(clock, idleSweep);
         this.published = Counter.builder("outbox.events.relayed").tag("outcome", "published").register(meterRegistry);
         this.retried = Counter.builder("outbox.events.relayed").tag("outcome", "retry").register(meterRegistry);
         this.deadLettered = Counter.builder("outbox.events.relayed").tag("outcome", "failed").register(meterRegistry);
@@ -75,7 +82,11 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval:PT30S}", initialDelayString = "PT15S")
     public void poll() {
+        if (!due.claim()) {
+            return;
+        }
         relayPending();
+        due.swept(Optional.ofNullable(outboxRepository.nextAttemptAt()));
     }
 
     /** Relays due events batch by batch until none are left; returns how many were attempted. */
@@ -136,6 +147,7 @@ public class OutboxRelay {
                     event.getId(), event.getEventType(), event.getAttempts(), failure.toString());
         } else {
             retried.increment();
+            due.expect(event.getNextAttemptAt());
             log.warn("Outbox event {} ({}) failed, attempt {}; retrying at {}: {}",
                     event.getId(), event.getEventType(), event.getAttempts(), event.getNextAttemptAt(),
                     failure.toString());

@@ -152,18 +152,41 @@ public class DemoDataService {
     }
 
     /** Seeds the dataset if demo mode is on and there are no cinemas yet. */
+    /**
+     * Seeds an empty database, and reseeds one whose shows have run out. The nightly reset can't be
+     * relied on to keep the shows current: on a free host that sleeps when nobody visits, the app is
+     * usually asleep at 3 AM and the reset never runs. Checking at startup means the first visitor
+     * after a long sleep gets a fresh demo (the host starts the app for them).
+     */
     @CacheEvict(allEntries = true, cacheNames = {CacheConfig.NOW_SHOWING, CacheConfig.ADMIN_DASHBOARD})
     @Transactional
-    public void seedIfEmpty() {
+    public void seedIfEmptyOrStale() {
         if (!enabled) {
             return;
         }
         ensureAccount("Demo Admin", demoAdminEmail, Roles.ROLE_ADMIN);
-        if (cinemas.count() > 0) {
-            log.info("Demo mode: data already present, skipping seed");
+        if (cinemas.count() == 0) {
+            seed();
             return;
         }
-        seed();
+        if (isStale()) {
+            log.info("Demo mode: no shows left after tomorrow; resetting the demo data");
+            wipeAndSeed();
+            return;
+        }
+        log.info("Demo mode: data already present and current, skipping seed");
+    }
+
+    /**
+     * True when no scheduled show starts more than a day from now. A fresh seed runs to the day after
+     * tomorrow, so this turns true about a day after seeding: a visitor always finds today's and
+     * tomorrow's showtimes.
+     */
+    boolean isStale() {
+        Instant horizon = clock.instant().plus(Duration.ofDays(1));
+        return !Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM shows WHERE status = 'SCHEDULED' AND starts_at > ?)",
+                Boolean.class, horizon.atOffset(ZoneOffset.UTC)));
     }
 
     /** Wipes the catalog, bookings and customer accounts (admins are kept), then reseeds around today. */
@@ -174,6 +197,10 @@ public class DemoDataService {
             return;
         }
         log.info("Demo mode: resetting data");
+        wipeAndSeed();
+    }
+
+    private void wipeAndSeed() {
         entityManager.flush();
         entityManager.clear();
         // Cascades to screens, seats, shows, prices, show seats, holds, payments, waitlists and bookings

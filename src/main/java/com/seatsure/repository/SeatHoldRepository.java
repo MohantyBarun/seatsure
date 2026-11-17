@@ -36,6 +36,10 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
             """)
     Optional<Long> findActiveId(@Param("userId") Long userId, @Param("showId") Long showId);
 
+    /** When the next active hold expires (null if none is active), for the expiry job's schedule. */
+    @Query("SELECT MIN(h.expiresAt) FROM SeatHold h WHERE h.status = com.seatsure.entity.SeatHold.Status.ACTIVE")
+    Instant nextExpiry();
+
     /**
      * Claims expired holds for the expiry job. SKIP LOCKED: a hold being paid for right now (its
      * row is locked by the payment confirmation) is skipped, and several instances can run the job.

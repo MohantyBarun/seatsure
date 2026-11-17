@@ -23,6 +23,8 @@ import java.lang.annotation.*;
         "app.outbox.poll-interval=PT1S",
         // Tests expire holds themselves (expireDue); a background sweep could claim them mid-test
         "app.holds.expiry-initial-delay=PT1H",
+        // The live seat map listener lets go of its connection soon after the last stream closes
+        "app.realtime.idle-grace=PT2S",
         "spring.datasource.hikari.maximum-pool-size=20"
 })
 @AutoConfigureMockMvc
