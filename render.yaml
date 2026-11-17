@@ -38,3 +38,5 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: TMDB_API_TOKEN          # optional: real movies from TMDB (https://www.themoviedb.org/settings/api)
+        sync: false

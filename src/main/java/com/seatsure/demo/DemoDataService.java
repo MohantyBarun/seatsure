@@ -70,8 +70,31 @@ public class DemoDataService {
             new MovieSeed("Code Red: Bengaluru", "Kannada", Certificate.UA, 147, "Action,Crime", -20,
                     "A traffic constable stumbles on a heist that uses the city's gridlock as its getaway plan."));
 
+    /** The fictional movies, used when TMDB isn't configured or can't be reached. */
+    static DemoCatalog builtInCatalog(LocalDate today) {
+        List<DemoCatalog.Movie> nowShowing = new ArrayList<>();
+        List<DemoCatalog.Movie> comingSoon = new ArrayList<>();
+        for (MovieSeed m : MOVIES) {
+            DemoCatalog.Movie movie = new DemoCatalog.Movie(m.title(), m.synopsis(), m.language(), m.certificate(),
+                    m.minutes(), List.of(m.genres().split(",")), today.minusDays(m.releasedDaysAgo()), null, null,
+                    null, null, null);
+            (m.releasedDaysAgo() >= 0 ? nowShowing : comingSoon).add(movie);
+        }
+        return new DemoCatalog(List.copyOf(nowShowing), List.copyOf(comingSoon), true);
+    }
+
+    /** {@code lineup}: the built-in movies this cinema shows. With real movies, see {@link #lineup}. */
     private record CinemaSeed(String city, String name, String address, List<String> lineup) {
     }
+
+    /** Languages each city's audiences favour, used to pick each cinema's lineup from real movies. */
+    private static final Map<String, List<String>> CITY_LANGUAGES = Map.of(
+            "Mumbai", List.of("Hindi", "Marathi", "English"),
+            "Bengaluru", List.of("Kannada", "English", "Tamil", "Telugu", "Malayalam"),
+            "Delhi NCR", List.of("Hindi", "English", "Punjabi"),
+            "Bhubaneswar", List.of("Odia", "Hindi", "English"));
+
+    static final int LINEUP_SIZE = 5;
 
     private static final List<CinemaSeed> CINEMAS = List.of(
             new CinemaSeed("Mumbai", "Starlight Cinemas: Andheri West", "4th floor, Link Square, Link Road, Andheri West",
@@ -160,21 +183,52 @@ public class DemoDataService {
      */
     @CacheEvict(allEntries = true, cacheNames = {CacheConfig.NOW_SHOWING, CacheConfig.ADMIN_DASHBOARD})
     @Transactional
-    public void seedIfEmptyOrStale() {
+    public void seedIfEmptyOrStale(DemoCatalog catalog) {
         if (!enabled) {
             return;
         }
         ensureAccount("Demo Admin", demoAdminEmail, Roles.ROLE_ADMIN);
         if (cinemas.count() == 0) {
-            seed();
+            seed(catalogOrBuiltIn(catalog));
             return;
         }
         if (isStale()) {
             log.info("Demo mode: no shows left after tomorrow; resetting the demo data");
-            wipeAndSeed();
+            wipeAndSeed(catalogOrBuiltIn(catalog));
             return;
         }
         log.info("Demo mode: data already present and current, skipping seed");
+    }
+
+    /** With the built-in movies (tests, and anywhere TMDB isn't wanted). */
+    @CacheEvict(allEntries = true, cacheNames = {CacheConfig.NOW_SHOWING, CacheConfig.ADMIN_DASHBOARD})
+    @Transactional
+    public void seedIfEmptyOrStale() {
+        seedIfEmptyOrStale(null);
+    }
+
+    /**
+     * Whether startup will (re)seed: lets the caller fetch movies from TMDB only when they'll be used,
+     * and outside the seeding transaction (no database connection held during HTTP calls).
+     */
+    @Transactional(readOnly = true)
+    public boolean needsSeed() {
+        return enabled && (cinemas.count() == 0 || isStale());
+    }
+
+    /**
+     * True when the demo has movies but none came from TMDB: the built-in ones are showing. Once a
+     * TMDB token is added, startup swaps them for real movies instead of waiting for the next reset.
+     */
+    @Transactional(readOnly = true)
+    public boolean showsBuiltInMovies() {
+        return enabled && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM movies) AND NOT EXISTS (SELECT 1 FROM movies WHERE tmdb_id IS NOT NULL)",
+                Boolean.class));
+    }
+
+    private DemoCatalog catalogOrBuiltIn(DemoCatalog catalog) {
+        return catalog != null ? catalog : builtInCatalog(LocalDate.now(clock.withZone(zone)));
     }
 
     /**
@@ -192,34 +246,41 @@ public class DemoDataService {
     /** Wipes the catalog, bookings and customer accounts (admins are kept), then reseeds around today. */
     @CacheEvict(allEntries = true, cacheNames = {CacheConfig.NOW_SHOWING, CacheConfig.ADMIN_DASHBOARD})
     @Transactional
-    public void reset() {
+    public void reset(DemoCatalog catalog) {
         if (!enabled) {
             return;
         }
         log.info("Demo mode: resetting data");
-        wipeAndSeed();
+        wipeAndSeed(catalogOrBuiltIn(catalog));
     }
 
-    private void wipeAndSeed() {
+    @CacheEvict(allEntries = true, cacheNames = {CacheConfig.NOW_SHOWING, CacheConfig.ADMIN_DASHBOARD})
+    @Transactional
+    public void reset() {
+        reset(null);
+    }
+
+    private void wipeAndSeed(DemoCatalog catalog) {
         entityManager.flush();
         entityManager.clear();
         // Cascades to screens, seats, shows, prices, show seats, holds, payments, waitlists and bookings
         jdbc.execute("TRUNCATE movies, cinemas, payment_webhook_events, mock_gateway_events CASCADE");
         jdbc.update("DELETE FROM users WHERE role = ?", Roles.ROLE_CUSTOMER.name());
         ensureAccount("Demo Admin", demoAdminEmail, Roles.ROLE_ADMIN);
-        seed();
+        seed(catalog);
     }
 
     // ---------------------------------------------------------------- seeding
 
-    private void seed() {
+    private void seed(DemoCatalog catalog) {
         Random random = new Random(2026); // deterministic: the same demo every day
         LocalDate today = LocalDate.now(clock.withZone(zone));
 
         Map<String, Movie> movieByTitle = new LinkedHashMap<>();
-        for (MovieSeed m : MOVIES) {
+        for (DemoCatalog.Movie m : catalog.all()) {
             Movie movie = new Movie(m.title(), m.synopsis(), m.minutes(), m.language(), m.certificate(),
-                    List.of(m.genres().split(",")), today.minusDays(m.releasedDaysAgo()), null);
+                    m.genres(), m.releaseDate(), m.posterUrl());
+            movie.describeFrom(m.tmdbId(), m.rating(), m.voteCount(), m.backdropUrl());
             movieByTitle.put(m.title(), movies.save(movie));
         }
 
@@ -231,12 +292,16 @@ public class DemoDataService {
         }
 
         List<ScreenPlan> plans = new ArrayList<>();
+        Map<String, Integer> cinemasInCity = new HashMap<>();
         for (CinemaSeed c : CINEMAS) {
             City city = cities.findByNameIgnoreCase(c.city())
                     .orElseThrow(() -> new IllegalStateException("Reference city missing: " + c.city()));
             Cinema cinema = cinemas.save(new Cinema(city, c.name(), c.address()));
-            plans.add(screen(cinema, "Audi 1", LARGE_SCREEN, c, true));
-            plans.add(screen(cinema, "Audi 2", SMALL_SCREEN, c, false));
+            int indexInCity = cinemasInCity.merge(c.city(), 1, Integer::sum) - 1;
+            List<String> lineup = catalog.builtIn() ? c.lineup()
+                    : lineup(catalog.nowShowing(), CITY_LANGUAGES.getOrDefault(c.city(), List.of()), indexInCity);
+            plans.add(screen(cinema, "Audi 1", LARGE_SCREEN, c.city(), lineup, true));
+            plans.add(screen(cinema, "Audi 2", SMALL_SCREEN, c.city(), lineup, false));
         }
         entityManager.flush(); // JDBC below reads what JPA just wrote
 
@@ -256,7 +321,27 @@ public class DemoDataService {
         }
         stats.flush(jdbc);
         log.info("Demo mode: seeded {} cinemas, {} movies, {} shows, {} bookings ({} tickets)",
-                CINEMAS.size(), MOVIES.size(), stats.shows, stats.bookingCount, stats.tickets);
+                CINEMAS.size(), movieByTitle.size(), stats.shows, stats.bookingCount, stats.tickets);
+    }
+
+    /**
+     * A cinema's five movies from the real now-showing list: the city's favourite languages first,
+     * then the rest, each in TMDB's order (most popular first). The second cinema in a city starts one
+     * further along, so the two don't show exactly the same five.
+     */
+    static List<String> lineup(List<DemoCatalog.Movie> nowShowing, List<String> languages, int indexInCity) {
+        List<DemoCatalog.Movie> ordered = new ArrayList<>();
+        nowShowing.stream().filter(m -> languages.contains(m.language())).forEach(ordered::add);
+        nowShowing.stream().filter(m -> !languages.contains(m.language())).forEach(ordered::add);
+        int size = Math.min(LINEUP_SIZE, ordered.size());
+        int start = Math.min(indexInCity, ordered.size() - size);
+        return ordered.subList(start, start + size).stream().map(DemoCatalog.Movie::title).toList();
+    }
+
+    /** 3D on the large screen for the kinds of film people go to see in 3D. */
+    private static boolean showsIn3d(Movie movie) {
+        return movie.genreList().stream().anyMatch(g -> g.equals("Sci-Fi") || g.equals("Science Fiction")
+                || g.equals("Animation"));
     }
 
     private record SeatInfo(long id, String row, int number, SeatCategory category) {
@@ -266,7 +351,8 @@ public class DemoDataService {
                               List<List<SeatInfo>> rows) {
     }
 
-    private ScreenPlan screen(Cinema cinema, String name, List<RowSpec> layout, CinemaSeed seed, boolean large) {
+    private ScreenPlan screen(Cinema cinema, String name, List<RowSpec> layout, String city, List<String> lineup,
+                              boolean large) {
         Screen screen = screens.save(new Screen(cinema, name));
         List<Seat> created = seats.saveAll(VenueAdminService.layoutSeats(screen, layout));
         Map<String, List<SeatInfo>> byRow = new LinkedHashMap<>();
@@ -274,7 +360,7 @@ public class DemoDataService {
             byRow.computeIfAbsent(s.getRowLabel(), r -> new ArrayList<>())
                     .add(new SeatInfo(s.getId(), s.getRowLabel(), s.getSeatNumber(), s.getCategory()));
         }
-        return new ScreenPlan(screen.getId(), large, seed.lineup(), seed.city(), List.copyOf(byRow.values()));
+        return new ScreenPlan(screen.getId(), large, lineup, city, List.copyOf(byRow.values()));
     }
 
     private void seedShow(ScreenPlan plan, Movie movie, LocalDate day, int slot, List<Long> customerIds,
@@ -282,7 +368,7 @@ public class DemoDataService {
         Instant now = clock.instant();
         Instant startsAt = day.atTime(SLOTS.get(slot)).atZone(zone).toInstant();
         Instant endsAt = startsAt.plus(Duration.ofMinutes(movie.getDurationMinutes())).plus(Show.TURNAROUND);
-        String format = plan.large() && movie.getTitle().equals("Orbit of Ashes") ? "3D" : "2D";
+        String format = plan.large() && showsIn3d(movie) ? "3D" : "2D";
         long showId = stats.nextShowId(jdbc);
         stats.shows++;
         stats.showRows.add(new Object[]{showId, movie.getId(), plan.screenId(), ts(startsAt), ts(endsAt), format,

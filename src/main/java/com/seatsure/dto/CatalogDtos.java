@@ -24,19 +24,24 @@ public final class CatalogDtos {
         }
     }
 
+    /** rating is out of 10 (TMDB users' average), with voteCount votes; both null when unrated. */
     public record MovieCard(Long id, String title, String language, Certificate certificate, List<String> genres,
-                            int durationMinutes, LocalDate releaseDate, String posterUrl) {
+                            int durationMinutes, LocalDate releaseDate, String posterUrl, String backdropUrl,
+                            Double rating, Integer voteCount) {
         public static MovieCard of(Movie m) {
             return new MovieCard(m.getId(), m.getTitle(), m.getLanguage(), m.getCertificate(), m.genreList(),
-                    m.getDurationMinutes(), m.getReleaseDate(), m.getPosterUrl());
+                    m.getDurationMinutes(), m.getReleaseDate(), m.getPosterUrl(), m.getBackdropUrl(), m.getRating(),
+                    m.getVoteCount());
         }
     }
 
     public record MovieDetail(Long id, String title, String synopsis, String language, Certificate certificate,
-                              List<String> genres, int durationMinutes, LocalDate releaseDate, String posterUrl) {
+                              List<String> genres, int durationMinutes, LocalDate releaseDate, String posterUrl,
+                              String backdropUrl, Double rating, Integer voteCount) {
         public static MovieDetail of(Movie m) {
             return new MovieDetail(m.getId(), m.getTitle(), m.getSynopsis(), m.getLanguage(), m.getCertificate(),
-                    m.genreList(), m.getDurationMinutes(), m.getReleaseDate(), m.getPosterUrl());
+                    m.genreList(), m.getDurationMinutes(), m.getReleaseDate(), m.getPosterUrl(), m.getBackdropUrl(),
+                    m.getRating(), m.getVoteCount());
         }
     }
 

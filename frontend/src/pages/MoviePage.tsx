@@ -2,6 +2,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { catalogApi } from '../api/endpoints';
 import type { Availability, MovieDetail, ShowtimeView, Showtimes } from '../api/types';
 import { Poster } from '../components/Poster';
+import { Rating } from '../components/Rating';
 import { Alert, EmptyState, LoadingBlock, Skeleton } from '../components/ui';
 import { useApi } from '../hooks/useApi';
 import { useCity } from '../hooks/useCity';
@@ -19,13 +20,19 @@ function MovieHero({ movie }: { movie: MovieDetail }) {
   const released = movie.releaseDate <= todayIst();
   return (
     <section className="relative overflow-hidden">
-      <div className="absolute inset-0 scale-110 opacity-60 blur-2xl" style={{ backgroundImage: posterGradient(movie.title) }} aria-hidden="true" />
+      {movie.backdropUrl ? (
+        <div className="absolute inset-0 bg-cover bg-center opacity-50" aria-hidden="true"
+             style={{ backgroundImage: `url("${movie.backdropUrl}")` }} />
+      ) : (
+        <div className="absolute inset-0 scale-110 opacity-60 blur-2xl" style={{ backgroundImage: posterGradient(movie.title) }} aria-hidden="true" />
+      )}
       <div className="absolute inset-0 bg-gradient-to-b from-ink-950/40 via-ink-950/80 to-ink-950" aria-hidden="true" />
       <div className="relative mx-auto flex max-w-7xl flex-col gap-6 px-4 py-10 sm:flex-row sm:px-6">
         <Poster title={movie.title} posterUrl={movie.posterUrl} certificate={movie.certificate}
                 className="aspect-[2/3] w-40 shrink-0 shadow-2xl ring-1 ring-white/15 sm:w-56" />
         <div className="max-w-2xl space-y-4 animate-fade-up">
           <h1 className="text-3xl font-extrabold tracking-tight text-white sm:text-5xl">{movie.title}</h1>
+          <Rating rating={movie.rating} voteCount={movie.voteCount} withVotes className="text-lg" />
           <div className="flex flex-wrap gap-2">
             <span className="chip">{movie.certificate === 'UA' ? 'U/A' : movie.certificate}</span>
             <span className="chip">{movie.language}</span>

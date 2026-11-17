@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { catalogApi } from '../api/endpoints';
 import type { Home, MovieCard } from '../api/types';
 import { Poster } from '../components/Poster';
+import { Rating } from '../components/Rating';
 import { Alert, EmptyState, Skeleton } from '../components/ui';
 import { useApi } from '../hooks/useApi';
 import { useCity } from '../hooks/useCity';
@@ -13,12 +14,14 @@ import { posterGradient } from '../lib/poster';
 function Spotlight({ movie }: { movie: MovieCard }) {
   return (
     <section className="relative overflow-hidden rounded-3xl" aria-label="Featured movie">
-      <div className="absolute inset-0 opacity-90" style={{ backgroundImage: posterGradient(movie.title) }} aria-hidden="true" />
+      <div className="absolute inset-0 bg-cover bg-center opacity-90" aria-hidden="true"
+           style={{ backgroundImage: movie.backdropUrl ? `url("${movie.backdropUrl}")` : posterGradient(movie.title) }} />
       <div className="absolute inset-0 bg-gradient-to-r from-ink-950 via-ink-950/70 to-transparent" aria-hidden="true" />
       <div className="relative flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-10">
         <div className="max-w-xl flex-1 space-y-4 animate-fade-up">
           <span className="chip bg-white/10 text-white">🔥 Trending in theatres</span>
           <h1 className="text-3xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl">{movie.title}</h1>
+          <Rating rating={movie.rating} voteCount={movie.voteCount} withVotes className="text-base" />
           <p className="text-sm text-ink-200">
             {movie.certificate === 'UA' ? 'U/A' : movie.certificate} · {movie.language} · {formatRuntime(movie.durationMinutes)} · {movie.genres.join(', ')}
           </p>
@@ -39,6 +42,7 @@ function MovieTile({ movie, upcoming }: { movie: MovieCard; upcoming?: boolean }
       <Poster title={movie.title} posterUrl={movie.posterUrl} certificate={movie.certificate}
               className="aspect-[2/3] w-full transition duration-300 group-hover:-translate-y-1 group-hover:shadow-glow" />
       <p className="mt-2.5 truncate text-sm font-bold text-white">{movie.title}</p>
+      {!upcoming && <Rating rating={movie.rating} voteCount={movie.voteCount} className="text-xs" />}
       <p className="truncate text-xs text-ink-400">
         {upcoming ? `Releases ${formatDate(movie.releaseDate)}` : `${movie.language} · ${movie.genres.slice(0, 2).join(', ')}`}
       </p>

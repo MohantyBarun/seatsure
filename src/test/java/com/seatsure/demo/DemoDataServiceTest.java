@@ -9,6 +9,7 @@ import com.seatsure.repository.UserRepository;
 import com.seatsure.service.Roles;
 import com.seatsure.support.PostgresTestcontainer;
 import org.junit.jupiter.api.Test;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -81,9 +82,35 @@ class DemoDataServiceTest {
     }
 
     @Test
+    @org.junit.jupiter.api.DisplayName("seeded from real movies: ratings and artwork are kept, and lineups follow each city's languages")
+    void seed_fromRealMovies() {
+        List<DemoCatalog.Movie> nowShowing = List.of(
+                DemoLineupTest.movie("Hindi Hit", "Hindi"), DemoLineupTest.movie("English Blockbuster", "English"),
+                DemoLineupTest.movie("Tamil Drama", "Tamil"), DemoLineupTest.movie("Telugu Epic", "Telugu"),
+                DemoLineupTest.movie("Kannada Thriller", "Kannada"), DemoLineupTest.movie("Odia Story", "Odia"));
+
+        demo.seedIfEmptyOrStale(new DemoCatalog(nowShowing, List.of(), false));
+
+        assertThat(demo.showsBuiltInMovies()).isFalse();
+        assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(6);
+        assertThat(count("SELECT COUNT(*) FROM shows")).isEqualTo(16 * 4 * 4);
+        assertThat(jdbc.queryForMap("SELECT rating, vote_count, backdrop_url, poster_url FROM movies WHERE title = 'Hindi Hit'"))
+                .containsEntry("rating", 7.5).containsEntry("vote_count", 900)
+                .containsEntry("backdrop_url", "https://img.test/b.jpg").containsEntry("poster_url", "https://img.test/p.jpg");
+        // Bhubaneswar favours Odia: the Odia film is on, though it's last in popularity
+        assertThat(count("""
+                SELECT COUNT(*) FROM shows s JOIN movies m ON m.id = s.movie_id JOIN screens sc ON sc.id = s.screen_id
+                JOIN cinemas c ON c.id = sc.cinema_id JOIN cities ci ON ci.id = c.city_id
+                WHERE ci.name = 'Bhubaneswar' AND m.title = 'Odia Story'
+                """)).isPositive();
+    }
+
+    @Test
     void seed_isIdempotent() {
         demo.seedIfEmptyOrStale();
         demo.seedIfEmptyOrStale();
+
+        assertThat(demo.showsBuiltInMovies()).as("seeded with the built-in movies").isTrue();
 
         assertThat(count("SELECT COUNT(*) FROM cinemas")).isEqualTo(8);
         assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(10);

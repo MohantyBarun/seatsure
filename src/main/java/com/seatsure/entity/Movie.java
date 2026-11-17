@@ -49,6 +49,21 @@ public class Movie {
     @Column(name = "poster_url", length = 500)
     private String posterUrl;
 
+    /** Wide artwork for the movie page; null for movies without one. */
+    @Column(name = "backdrop_url", length = 500)
+    private String backdropUrl;
+
+    /** Average rating out of 10 and how many votes it's based on, with its source (TMDB); null if unrated. */
+    @Column(name = "rating")
+    private Double rating;
+
+    @Column(name = "vote_count")
+    private Integer voteCount;
+
+    /** The TMDB movie the data came from; null for movies added by hand. */
+    @Column(name = "tmdb_id")
+    private Integer tmdbId;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -76,6 +91,14 @@ public class Movie {
         this.genres = String.join(",", genres.stream().map(String::trim).filter(g -> !g.isEmpty()).distinct().toList());
         this.releaseDate = releaseDate;
         this.posterUrl = posterUrl == null || posterUrl.isBlank() ? null : posterUrl.trim();
+    }
+
+    /** Ratings and artwork from an external catalogue (TMDB). Admin edits leave them alone. */
+    public void describeFrom(Integer tmdbId, Double rating, Integer voteCount, String backdropUrl) {
+        this.tmdbId = tmdbId;
+        this.rating = rating;
+        this.voteCount = voteCount;
+        this.backdropUrl = backdropUrl == null || backdropUrl.isBlank() ? null : backdropUrl.trim();
     }
 
     public void touch(Instant now) {

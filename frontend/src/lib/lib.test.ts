@@ -95,3 +95,13 @@ describe('misc', () => {
     expect(posterGradient('Paper Boats')).toMatch(/^linear-gradient/);
   });
 });
+
+describe('formatVotes', () => {
+  it('shortens thousands the way rating badges do', async () => {
+    const { formatVotes } = await import('../components/Rating');
+    expect(formatVotes(950)).toBe('950');
+    expect(formatVotes(1000)).toBe('1k');
+    expect(formatVotes(1234)).toBe('1.2k');
+    expect(formatVotes(25400)).toBe('25k');
+  });
+});

@@ -107,6 +107,13 @@ export function Layout() {
         <p>
           SeatSure is a portfolio project. Payments go through a mock gateway, so no real money moves.
         </p>
+        <p className="mt-2">
+          Movie details, posters and ratings come from{' '}
+          <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" className="font-semibold text-ink-300 underline">
+            TMDB
+          </a>
+          . This product uses the TMDB API but is not endorsed or certified by TMDB. Cinemas, showtimes and prices are made up.
+        </p>
       </footer>
       <CityPicker />
     </div>

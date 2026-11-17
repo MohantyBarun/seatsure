@@ -16,7 +16,7 @@ import { SeatsPage } from './SeatsPage';
 const cities: City[] = [{ id: 1, name: 'Bhubaneswar', state: 'Odisha' }, { id: 2, name: 'Mumbai', state: 'Maharashtra' }];
 const home: Home = {
   city: cities[0],
-  nowShowing: [movie, { ...movie, id: 11, title: 'Monsoon Protocol', language: 'Hindi', genres: ['Action'] }],
+  nowShowing: [movie, { ...movie, id: 11, title: 'Monsoon Protocol', language: 'Hindi', genres: ['Action'], rating: 9.4, voteCount: 3 }],
   comingSoon: [{ ...movie, id: 12, title: 'Code Red: Bengaluru', releaseDate: '2030-01-10' }],
 };
 
@@ -41,6 +41,9 @@ describe('HomePage', () => {
     expect(await screen.findByRole('heading', { name: /now showing in bhubaneswar/i })).toBeInTheDocument();
     expect(screen.getAllByText('Monsoon Protocol').length).toBeGreaterThan(0);
     expect(screen.getByText('Coming soon ✨')).toBeInTheDocument();
+    // TMDB ratings, labelled with their source; one from three votes isn't shown
+    expect(screen.getAllByTitle('7.6/10 from 2,400 votes on TMDB').length).toBeGreaterThan(0);
+    expect(screen.queryByTitle(/9\.4\/10/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Tamil' }));
     const grid = screen.getByRole('heading', { name: /now showing/i }).closest('section')!;
@@ -53,6 +56,7 @@ describe('HomePage', () => {
     renderAt('/', <Route element={<Layout />}><Route path="/" element={<HomePage />} /></Route>);
 
     expect(await screen.findByRole('dialog', { name: /where are you watching/i })).toBeInTheDocument();
+    expect(screen.getByText(/uses the TMDB API but is not endorsed or certified by TMDB/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /mumbai/i }));
     expect(localStorage.getItem('seatsure.cityId')).toBe('2');
   });

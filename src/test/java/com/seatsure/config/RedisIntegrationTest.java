@@ -95,7 +95,7 @@ class RedisIntegrationTest {
         Cache cache = cacheManager.getCache(CacheConfig.NOW_SHOWING);
 
         List<MovieCard> movies = List.of(new MovieCard(1L, "Monsoon Protocol", "Hindi", Certificate.UA,
-                List.of("Action", "Thriller"), 152, LocalDate.of(2026, 10, 23), null));
+                List.of("Action", "Thriller"), 152, LocalDate.of(2026, 10, 23), null, null, 7.4, 1200));
         cache.put(7L, movies);
 
         assertThat(cache.get(7L, List.class)).isEqualTo(movies);
