@@ -259,6 +259,44 @@ CI runs everything on every push and PR, and **fails if any test is skipped**, s
 | Scheduling | A once-per-cluster job run again inside its lock window is skipped (ShedLock) |
 | Frontend | API client (refresh rotation, retries), live seat map hook against a fake `EventSource`, and the booking flow: city picker, seat selection, best-seat suggestions and one-click hold, hold conflicts, waitlist, checkout and webhook polling, cancel, route guards, demo login |
 
+## 📈 Load test
+
+A [k6](https://k6.io) script ([`loadtest/`](loadtest)) runs in GitHub Actions against the **production Docker image** (`prod` profile, a connection pool of 5, 512 MB of memory) and a fresh PostgreSQL. Afterwards it **checks the database**, not just the responses: every hold and booking the API granted must be there exactly once.
+
+| Scenario | Load |
+|---|---|
+| Browse | 100 requests/second of public reads for 30 s |
+| Stampede | 300 customers try to hold 2 neighbouring seats in a 100-seat hall at the same moment |
+| Best seats | 100 customers press "hold the best seats for me" at the same moment |
+| Checkout | 400 bookings end to end (hold, pay, signed webhook, ticket), 40 at a time |
+
+**Correctness ([run of 2026-11-17](https://github.com/MohantyBarun/seatsure/actions/runs/44065277233)):** 5,821 requests, 0 unexpected statuses, 5,100/5,100 checks passed.
+- **Stampede:** 43 customers won a pair and 257 were told their seats were just taken. 43 active holds and 86 held seats in the database: nothing held twice.
+- **Best seats:** all 100 customers got two seats side by side; 100 holds and 200 held seats in the database.
+- **Checkout:** 400 tickets, 400 confirmed bookings, 800 booked seats, 0 refunds.
+- **Everywhere:** 0 seats sold twice, 0 held seats without an active hold, 0 booked seats without a booking.
+
+**Latency (ms):**
+
+| Request | Median | p95 | p99 |
+|---|---:|---:|---:|
+| Seat map | 5 | 6 | 8 |
+| Best-seat suggestions | 3 | 5 | 39 |
+| City home / showtimes | 2 / 4 | 3 / 5 | 7 / 7 |
+| Hold 2 seats, 300 customers at once | 1,638 | 1,901 | 1,922 |
+| Hold the best seats, 100 at once (per request) | 866 | 1,801 | 2,066 |
+| Checkout: hold / start payment | 135 / 125 | 306 / 279 | 402 / 324 |
+| Checkout: payment approved → ticket | 591 | 1,389 | 1,798 |
+| Checkout: hold → ticket, whole flow | 923 | 1,790 | 2,220 |
+
+**Reading these numbers:**
+- **The stampede is a queue, by design.** 300 holds go through row locks and 5 database connections, so they are served one after another: all 300 answered within about 2 seconds, roughly 150 holds a second.
+- **Payment → ticket is mostly waiting for the gateway.** The mock gateway delivers webhooks every 2 seconds, so that step is about the delivery schedule, not processing time.
+- **"Hold the best seats" herds.** Every customer in a burst computes the same best pair, and the server gives up after losing 5 races in a row. In this run 102 of the 202 requests were "seats are going fast, try again" answers that the client retried (all 100 customers still got a pair).
+- **This is a best case for this hardware, not production.** The database is on the same machine (Neon is across a network) and the app has a full CPU core (Render's free tier gives 0.1). Rate limiting is off, because every request comes from one address.
+
+Run it yourself from the Actions tab (**Load test → Run workflow**); it also runs on PRs that change the load test.
+
 ## ☁️ Deployment (free tier)
 
 | Component | Host |
@@ -274,4 +312,4 @@ CI runs everything on every push and PR, and **fails if any test is skipped**, s
 Optional free add-ons (everything works without them): [Upstash](https://upstash.com) Redis, [CloudAMQP](https://www.cloudamqp.com) RabbitMQ, [Brevo](https://www.brevo.com) SMTP, and any Prometheus / Grafana Cloud scraper.
 
 ## 🔮 Upcoming
-- Load test (k6) with published latency numbers for the seat-hold path
+- Spread "hold the best seats" bursts across the top few blocks, so a crowd doesn't all race for the same pair
