@@ -116,6 +116,74 @@ describe('SeatsPage', () => {
     expect(screen.queryByRole('button', { name: /seat b1,.*selected/i })).not.toBeInTheDocument();
   });
 
+  it('shows the best seats on the map, ready to hold', async () => {
+    signIn();
+    const best = {
+      showId: 1, count: 2, category: null,
+      suggestions: [
+        { rowLabel: 'A', category: 'CLASSIC', seatIds: [1, 2], labels: ['A1', 'A2'], score: 91,
+          reasons: ['In the centre of the row', 'Ideal distance from the screen'], ticketsPaise: 40000 },
+        { rowLabel: 'B', category: 'RECLINER', seatIds: [4], labels: ['B1'], score: 64, reasons: ['Towards the side'], ticketsPaise: 50000 },
+      ],
+    };
+    const fetchMock = seatsBackend((url) => (url.pathname === '/shows/1/best-seats' ? jsonResponse(best) : null));
+    renderAt('/shows/1', seatRoutes());
+
+    await userEvent.click(await screen.findByRole('button', { name: /show best seats on the map/i }));
+
+    expect(await screen.findByRole('button', { name: /seat a1,.*selected/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /seat a2,.*selected/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /best: a1–a2.*91\/100.*in the centre of the row/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('A1, A2')).toBeInTheDocument(); // the usual "hold seats & pay" bar
+    const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/shows/1/best-seats'))!;
+    expect(new URL(String(call[0])).searchParams.get('count')).toBe('2');
+    expect(new URL(String(call[0])).searchParams.has('category')).toBe(false);
+
+    // The runner-up can be put on the map instead
+    await userEvent.click(screen.getByRole('button', { name: /b1.*64\/100/i }));
+    expect(screen.getByRole('button', { name: /seat b1,.*selected/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /seat a1,.*selected/i })).not.toBeInTheDocument();
+
+    // Changing the request clears the old answers
+    await userEvent.click(screen.getByRole('button', { name: /more seats/i }));
+    expect(screen.queryByRole('button', { name: /64\/100/i })).not.toBeInTheDocument();
+  });
+
+  it('holds the best seats in one click and goes to checkout', async () => {
+    signIn();
+    const fetchMock = seatsBackend((url, init) =>
+      url.pathname === '/shows/1/holds/best' && init.method === 'POST' ? jsonResponse(hold(), 201) : null);
+    renderAt('/shows/1', seatRoutes());
+
+    await userEvent.click(await screen.findByRole('button', { name: /more seats/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^classic/i }));
+    await userEvent.click(screen.getByRole('button', { name: /hold the best seats for me/i }));
+
+    expect(await screen.findByText('CHECKOUT PAGE')).toBeInTheDocument();
+    const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/shows/1/holds/best'))!;
+    expect(body(call[1]!)).toEqual({ count: 3, category: 'CLASSIC' });
+    expect((call[1]!.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+  });
+
+  it('says so when no row has that many seats together', async () => {
+    signIn();
+    seatsBackend((url, init) => {
+      if (url.pathname === '/shows/1/best-seats') return jsonResponse({ showId: 1, count: 2, category: null, suggestions: [] });
+      if (url.pathname === '/shows/1/holds/best' && init.method === 'POST') {
+        return jsonResponse({ status: 409, error: "There aren't 2 seats together any more." }, 409);
+      }
+      return null;
+    });
+    renderAt('/shows/1', seatRoutes());
+
+    await userEvent.click(await screen.findByRole('button', { name: /show best seats on the map/i }));
+    expect(await screen.findByText(/no row has 2 free seats together right now/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /hold the best seats for me/i }));
+    expect(await screen.findByText("There aren't 2 seats together any more.")).toBeInTheDocument();
+    expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument();
+  });
+
   it('sends a signed-out visitor to sign in first', async () => {
     seatsBackend();
     renderAt('/shows/1', seatRoutes());

@@ -28,6 +28,14 @@ public final class CheckoutDtos {
             List<@NotNull Long> seatIds) {
     }
 
+    /** "Pick for me": how many seats together, and optionally in which category. */
+    public record BestHoldRequest(
+            @Min(value = 1, message = "Ask for at least one seat")
+            @Max(value = MAX_SEATS, message = "You can book up to " + MAX_SEATS + " seats at a time")
+            int count,
+            SeatCategory category) {
+    }
+
     public record HeldSeat(Long seatId, String label, SeatCategory category, int pricePaise) {
     }
 

@@ -133,6 +133,25 @@ export interface SeatMap {
   rows: SeatRow[];
 }
 
+/** Free seats side by side in one row, with a score out of 100 and what earned it. */
+export interface SeatSuggestion {
+  rowLabel: string;
+  category: SeatCategory;
+  seatIds: number[];
+  labels: string[];
+  score: number;
+  reasons: string[];
+  ticketsPaise: number;
+}
+
+/** The best places to sit right now, best first (at most one per row). */
+export interface BestSeats {
+  showId: number;
+  count: number;
+  category: SeatCategory | null;
+  suggestions: SeatSuggestion[];
+}
+
 /** Payload of the "seats" Server-Sent Event. */
 export interface SeatsEvent {
   showId: number;

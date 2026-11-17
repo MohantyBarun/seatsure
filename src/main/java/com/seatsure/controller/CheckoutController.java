@@ -6,6 +6,7 @@ import com.seatsure.payment.PaymentService;
 import com.seatsure.payment.PaymentWebhookService;
 import com.seatsure.payment.WebhookSigner;
 import com.seatsure.payment.mock.MockPaymentGateway;
+import com.seatsure.service.BestSeatService;
 import com.seatsure.service.HoldService;
 import com.seatsure.service.WaitlistService;
 import com.seatsure.util.CurrentUser;
@@ -34,6 +35,7 @@ import java.util.Map;
 public class CheckoutController {
 
     private final HoldService holds;
+    private final BestSeatService bestSeats;
     private final PaymentService payments;
     private final MockPaymentGateway mockGateway;
     private final PaymentWebhookService webhooks;
@@ -46,6 +48,17 @@ public class CheckoutController {
     public ResponseEntity<HoldView> hold(@PathVariable Long showId, @Valid @RequestBody HoldRequest request,
                                          @Parameter(hidden = true) @AuthenticationPrincipal CurrentUser user) {
         HoldView hold = holds.create(user.id(), showId, request.seatIds());
+        return ResponseEntity.created(URI.create("/holds/" + hold.holdId())).body(hold);
+    }
+
+    @Operation(summary = "Pick the best seats for me and hold them",
+            description = "Chooses the best `count` free seats together (see GET /shows/{id}/best-seats) and holds them "
+                    + "in one request. If another customer takes them first, it chooses again. 409 if no row has that "
+                    + "many free seats together.")
+    @PostMapping("/shows/{showId}/holds/best")
+    public ResponseEntity<HoldView> holdBest(@PathVariable Long showId, @Valid @RequestBody BestHoldRequest request,
+                                             @Parameter(hidden = true) @AuthenticationPrincipal CurrentUser user) {
+        HoldView hold = bestSeats.holdBest(user.id(), showId, request.count(), request.category());
         return ResponseEntity.created(URI.create("/holds/" + hold.holdId())).body(hold);
     }
 
