@@ -17,6 +17,11 @@ import java.util.*;
  * Where the demo's movies come from: what's really in Indian cinemas (TMDB) when a token is set and
  * TMDB answers, otherwise the built-in fictional movies. The demo never depends on TMDB being up.
  *
+ * <p>TMDB's "now playing" list is ranked by worldwide popularity, so it's mostly Hollywood. The demo
+ * therefore asks for each Indian language's recent releases first (up to {@value #PER_LANGUAGE} per
+ * language), then fills up with the most popular of the rest. Each cinema's lineup then favours its
+ * city's languages.
+ *
  * <p>Movies are skipped rather than patched up when something the app needs is missing: no poster or
  * synopsis, no runtime, or a runtime too long for the demo's show slots. Ratings are TMDB users'
  * average and are labelled as such in the UI.
@@ -28,7 +33,13 @@ public class DemoCatalogSource {
     /** The demo's show slots are 3.5 hours apart, less 15 minutes to clean between shows. */
     static final int MAX_RUNTIME_MINUTES = 195;
     static final int MIN_RUNTIME_MINUTES = 30;
-    static final int NOW_SHOWING = 8;
+    /** Original languages of Indian cinema, in the order their releases are picked. */
+    static final List<String> INDIAN_LANGUAGES = List.of("hi", "ta", "te", "ml", "kn", "mr", "bn", "or");
+    static final int PER_LANGUAGE = 2;
+    static final int INDIAN_FILMS = 8;
+    static final int WORLDWIDE_FILMS = 6;
+    /** "In cinemas now" for an Indian release: it opened within this many days. */
+    static final int RECENT_DAYS = 42;
     static final int MIN_NOW_SHOWING = DemoDataService.LINEUP_SIZE;
     static final int COMING_SOON = 2;
     static final String POSTER_SIZE = "/w500";
@@ -59,30 +70,58 @@ public class DemoCatalogSource {
             return DemoDataService.builtInCatalog(today);
         }
         try {
-            List<DemoCatalog.Movie> nowShowing = pick(tmdb.nowPlaying(), today, true, NOW_SHOWING);
+            List<TmdbClient.Summary> nowPlaying = tmdb.nowPlaying(); // if TMDB is down, this throws: built-in movies
+            Set<String> titles = new HashSet<>();
+            List<DemoCatalog.Movie> indian = indianReleases(today, titles);
+            List<DemoCatalog.Movie> worldwide = pick(nowPlaying, today, true, WORLDWIDE_FILMS, titles);
+            List<DemoCatalog.Movie> nowShowing = new ArrayList<>(indian);
+            nowShowing.addAll(worldwide);
             if (nowShowing.size() < MIN_NOW_SHOWING) {
                 log.warn("Demo movies: TMDB returned only {} usable movies in cinemas; using the built-in movies",
                         nowShowing.size());
                 return DemoDataService.builtInCatalog(today);
             }
-            List<DemoCatalog.Movie> comingSoon = pick(tmdb.upcoming(), today, false, COMING_SOON);
-            log.info("Demo movies: {} now showing and {} coming soon from TMDB", nowShowing.size(), comingSoon.size());
-            return new DemoCatalog(nowShowing, comingSoon, false);
+            List<DemoCatalog.Movie> comingSoon = pick(tmdb.upcoming(), today, false, COMING_SOON, titles);
+            log.info("Demo movies: {} now showing ({} Indian releases) and {} coming soon from TMDB",
+                    nowShowing.size(), indian.size(), comingSoon.size());
+            return new DemoCatalog(List.copyOf(nowShowing), comingSoon, false);
         } catch (RuntimeException e) {
             log.warn("Demo movies: TMDB unavailable ({}); using the built-in movies", e.toString());
             return DemoDataService.builtInCatalog(today);
         }
     }
 
-    private List<DemoCatalog.Movie> pick(List<TmdbClient.Summary> candidates, LocalDate today, boolean inCinemas,
-                                         int wanted) {
+    /**
+     * Each Indian language's most popular releases of the last {@value #RECENT_DAYS} days. A language
+     * whose lookup fails is skipped: the rest of the catalogue is still worth having.
+     */
+    private List<DemoCatalog.Movie> indianReleases(LocalDate today, Set<String> titles) {
         List<DemoCatalog.Movie> picked = new ArrayList<>();
-        Set<String> titles = new HashSet<>();
+        for (String language : INDIAN_LANGUAGES) {
+            int wanted = Math.min(PER_LANGUAGE, INDIAN_FILMS - picked.size());
+            if (wanted <= 0) {
+                break;
+            }
+            try {
+                picked.addAll(pick(tmdb.recentReleases(language, today.minusDays(RECENT_DAYS), today), today, true,
+                        wanted, titles));
+            } catch (RuntimeException e) {
+                log.warn("Demo movies: couldn't fetch recent '{}' releases from TMDB ({}); skipping them", language,
+                        e.toString());
+            }
+        }
+        return picked;
+    }
+
+    /** Up to {@code wanted} usable movies, skipping titles already in {@code titles} (which it adds to). */
+    private List<DemoCatalog.Movie> pick(List<TmdbClient.Summary> candidates, LocalDate today, boolean inCinemas,
+                                         int wanted, Set<String> titles) {
+        List<DemoCatalog.Movie> picked = new ArrayList<>();
         for (TmdbClient.Summary s : candidates) {
             if (picked.size() == wanted) {
                 break;
             }
-            if (isBlank(s.title()) || isBlank(s.overview()) || isBlank(s.posterPath()) || !titles.add(s.title().trim())) {
+            if (isBlank(s.title()) || isBlank(s.overview()) || isBlank(s.posterPath()) || titles.contains(s.title().trim())) {
                 continue;
             }
             TmdbClient.Details details = tmdb.details(s.id());
@@ -97,6 +136,7 @@ public class DemoCatalogSource {
             } else if (released == null || !released.isAfter(today)) {
                 continue; // "coming soon" must be in the future
             }
+            titles.add(s.title().trim());
             picked.add(toMovie(s, details, runtime, released));
         }
         return List.copyOf(picked);
