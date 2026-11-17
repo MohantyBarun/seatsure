@@ -11,6 +11,9 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.distribution.CountAtBucket;
+import io.micrometer.core.instrument.distribution.HistogramSnapshot;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
@@ -27,9 +30,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 /**
- * A live snapshot for the admin "System" page, read from the same Micrometer registry that feeds
- * /actuator/prometheus, plus the cache, outbox and circuit-breaker state. Counters are per instance
- * and reset when the server restarts.
+ * A live snapshot for the admin "Under the hood" page, read from the same Micrometer registry that
+ * feeds /actuator/prometheus, plus the cache, outbox and circuit-breaker state. Counters are per
+ * instance and reset when the server restarts.
+ *
+ * <p>Latency is the median and 95th percentile, not the mean and maximum: on a free host that sleeps,
+ * the first request after waking takes tens of seconds, and one such request dominated a mean. The
+ * percentiles come from the response-time histogram (the same buckets Prometheus scrapes), measured
+ * from {@code app.system.warmup} after startup so the cold start itself isn't counted.
  */
 @Service
 public class SystemStatusService {
@@ -38,7 +46,17 @@ public class SystemStatusService {
                                  boolean tracingExport, boolean demoMode) {
     }
 
-    public record Http(long requests, long clientErrors, long serverErrors, double meanMs, double maxMs) {
+    /**
+     * medianMs and p95Ms are approximate (interpolated within histogram buckets) and null with no
+     * traffic to measure. They cover measuredRequests: those since the warm-up ended, or every request
+     * while {@code warmingUp}.
+     */
+    public record Http(long requests, long clientErrors, long serverErrors, Double medianMs, Double p95Ms,
+                       long measuredRequests, boolean warmingUp) {
+    }
+
+    /** Response-time histogram merged across endpoints: bucket upper bound (ms) -> requests at or under it. */
+    record Latency(NavigableMap<Double, Double> cumulative, long count) {
     }
 
     public record CacheStat(String name, long hits, long misses, Double hitRate, Long size) {
@@ -83,6 +101,8 @@ public class SystemStatusService {
     private final boolean demoMode;
     private final boolean tracingExport;
     private final Map<String, Integer> limits;
+    /** The histogram when the warm-up ended; null until then. */
+    private volatile Latency afterWarmup;
 
     public SystemStatusService(MeterRegistry meters, CacheManager cacheManager, OutboxEventRepository outboxRepository,
                                CircuitBreakerRegistry circuitBreakers, EmailSender emailSender,
@@ -124,12 +144,67 @@ public class SystemStatusService {
     }
 
     Http http() {
-        List<Timer> timers = meters.find("http.server.requests").timers().stream().filter(APP_TRAFFIC).toList();
+        List<Timer> timers = appTraffic();
         long count = timers.stream().mapToLong(Timer::count).sum();
-        double totalMs = timers.stream().mapToDouble(t -> t.totalTime(TimeUnit.MILLISECONDS)).sum();
-        double maxMs = timers.stream().mapToDouble(t -> t.max(TimeUnit.MILLISECONDS)).max().orElse(0);
+        Latency now = latency(timers);
+        Latency baseline = afterWarmup;
+        Latency measured = baseline == null ? now : minus(now, baseline);
         return new Http(count, countWithOutcome(timers, "CLIENT_ERROR"), countWithOutcome(timers, "SERVER_ERROR"),
-                count == 0 ? 0 : round(totalMs / count), round(maxMs));
+                percentile(measured, 0.5), percentile(measured, 0.95), measured.count(), baseline == null);
+    }
+
+    /** Once, a little after startup: from here on, latency leaves out the cold start. */
+    @Scheduled(initialDelayString = "${app.system.warmup:PT1M}", fixedDelayString = "P3650D")
+    public void endWarmup() {
+        afterWarmup = latency(appTraffic());
+    }
+
+    private List<Timer> appTraffic() {
+        return meters.find("http.server.requests").timers().stream().filter(APP_TRAFFIC).toList();
+    }
+
+    static Latency latency(List<Timer> timers) {
+        NavigableMap<Double, Double> merged = new TreeMap<>();
+        long count = 0;
+        for (Timer timer : timers) {
+            HistogramSnapshot snapshot = timer.takeSnapshot();
+            count += snapshot.count();
+            for (CountAtBucket bucket : snapshot.histogramCounts()) {
+                merged.merge(bucket.bucket(TimeUnit.MILLISECONDS), bucket.count(), Double::sum);
+            }
+        }
+        return new Latency(merged, count);
+    }
+
+    static Latency minus(Latency now, Latency before) {
+        NavigableMap<Double, Double> diff = new TreeMap<>();
+        now.cumulative().forEach((bound, c) -> diff.put(bound, Math.max(0, c - before.cumulative().getOrDefault(bound, 0.0))));
+        return new Latency(diff, Math.max(0, now.count() - before.count()));
+    }
+
+    /**
+     * The q-th percentile in milliseconds, interpolated linearly inside the bucket it falls in; the
+     * largest bucket's bound if it lies beyond every bucket. Null when there's nothing to measure.
+     */
+    static Double percentile(Latency latency, double q) {
+        if (latency.count() <= 0 || latency.cumulative().isEmpty()) {
+            return null;
+        }
+        double target = q * latency.count();
+        double lowerBound = 0;
+        double below = 0;
+        for (Map.Entry<Double, Double> bucket : latency.cumulative().entrySet()) {
+            double upperBound = bucket.getKey();
+            double atOrUnder = bucket.getValue();
+            if (atOrUnder >= target) {
+                double inBucket = atOrUnder - below;
+                double fraction = inBucket <= 0 ? 1 : (target - below) / inBucket;
+                return round(lowerBound + (upperBound - lowerBound) * fraction);
+            }
+            lowerBound = upperBound;
+            below = atOrUnder;
+        }
+        return round(latency.cumulative().lastKey());
     }
 
     private static long countWithOutcome(List<Timer> timers, String outcome) {

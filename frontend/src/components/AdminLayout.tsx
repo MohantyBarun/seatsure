@@ -3,14 +3,14 @@ import { useAuth } from '../auth/AuthContext';
 import { SlowServerNotice } from './Layout';
 import { Logo } from './Logo';
 
+/** What a cinema admin works with. */
 const LINKS: [string, string, string][] = [
   ['/admin', 'Dashboard', '📊'],
   ['/admin/bookings', 'Bookings', '🎟️'],
   ['/admin/movies', 'Movies', '🎬'],
   ['/admin/cinemas', 'Cinemas', '🏛️'],
   ['/admin/shows', 'Shows', '🗓️'],
-  ['/admin/emails', 'Emails', '✉️'],
-  ['/admin/system', 'System', '🩺'],
+  ['/admin/emails', 'Customer emails', '✉️'],
 ];
 
 export function AdminLayout() {
@@ -36,6 +36,13 @@ export function AdminLayout() {
                   <span aria-hidden="true">{icon}</span>{label}
                 </NavLink>
               ))}
+            </nav>
+            {/* Not part of a cinema admin's job: kept apart, for anyone curious how SeatSure works */}
+            <nav className="border-t border-white/5 pt-3" aria-label="For developers">
+              <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-ink-500">For developers</p>
+              <NavLink to="/admin/system" className={link}>
+                <span aria-hidden="true">🔧</span>Under the hood
+              </NavLink>
             </nav>
             <div className="mt-auto hidden space-y-2 border-t border-white/5 pt-4 text-xs lg:block">
               <p className="truncate text-ink-400">{session?.email}</p>

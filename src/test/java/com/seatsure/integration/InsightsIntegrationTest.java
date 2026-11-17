@@ -36,7 +36,10 @@ class InsightsIntegrationTest {
                 .andExpect(jsonPath("$.caches[*].name", hasItem("nowShowing")))
                 .andExpect(jsonPath("$.circuitBreakers[*].name", hasItem("smtp")))
                 .andExpect(jsonPath("$.rateLimits.limitsPerMinute.login").value(3))
-                .andExpect(jsonPath("$.http.requests").isNumber());
+                .andExpect(jsonPath("$.http.requests").isNumber())
+                // The real registry's histogram gives a median for the request above
+                .andExpect(jsonPath("$.http.medianMs").isNumber())
+                .andExpect(jsonPath("$.http.p95Ms").isNumber());
     }
 
     @Test

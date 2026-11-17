@@ -128,7 +128,8 @@ export function EmailsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Emails" subtitle="Every notification goes through the transactional outbox. Refreshes every 5 seconds." />
+      <PageHeader title="Customer emails"
+                  subtitle="Tickets, cancellations and waitlist offers sent to customers, and whether each one went out. Refreshes every 5 seconds." />
       {error && <Alert>{error}</Alert>}
       {!data ? (!error && <LoadingBlock />) : (
         <>
@@ -155,6 +156,11 @@ export function EmailsPage() {
 }
 
 // ------------------------------------------------------------------ System
+
+/** 12.3 -> "12 ms", 2340 -> "2.3 s". */
+export function formatMs(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
 
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
@@ -246,7 +252,10 @@ export function SystemView({ data, reload }: { data: SystemSnapshot; reload: () 
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard label="Requests" value={http.requests} hint="excluding admin polling" />
-        <StatCard label="Mean latency" value={`${http.meanMs} ms`} hint={`max ${http.maxMs} ms`} accent="from-grape-500 to-flame-500" />
+        <StatCard label="Typical response" value={http.medianMs == null ? '–' : `≈ ${formatMs(http.medianMs)}`}
+                  hint={http.p95Ms == null ? 'no traffic yet'
+                    : `p95 ≈ ${formatMs(http.p95Ms)} · ${http.warmingUp ? 'includes start-up' : 'after the first minute'}`}
+                  accent="from-grape-500 to-flame-500" />
         <StatCard label="4xx" value={http.clientErrors} accent="from-sun-400 to-sun-300" />
         <StatCard label="5xx" value={http.serverErrors} accent={http.serverErrors ? 'from-flame-600 to-flame-400' : 'from-mint-400 to-mint-300'} />
         <StatCard label="Uptime" value={formatDuration(jvm.uptimeSeconds)} hint="counters reset on restart" accent="from-mint-400 to-grape-500" />
@@ -328,7 +337,12 @@ export function SystemPage() {
   const error = explainApiError(status.error);
   return (
     <div className="space-y-6">
-      <PageHeader title="System" subtitle="Live numbers from this server's metrics registry (the same one /actuator/prometheus exports). Refreshes every 5 seconds." />
+      <PageHeader title="Under the hood"
+                  subtitle="The engineering view: what this deployment runs on and how it's behaving, from the same metrics /actuator/prometheus exports. Refreshes every 5 seconds." />
+      <Alert kind="info">
+        A cinema admin wouldn't see this page: a real product keeps it in a monitoring tool such as Grafana. It's
+        here so you can watch the caching, rate limiting, outbox and circuit breakers at work.
+      </Alert>
       {error && <Alert>{error}</Alert>}
       {!status.data ? (!error && <LoadingBlock />) : <SystemView data={status.data} reload={status.reload} />}
     </div>
