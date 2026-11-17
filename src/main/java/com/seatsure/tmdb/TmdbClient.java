@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -68,6 +69,29 @@ public class TmdbClient {
     /** Movies releasing in the region soon. */
     public List<Summary> upcoming() {
         return page("/movie/upcoming");
+    }
+
+    /**
+     * Films in one original language (ISO 639-1, e.g. "hi", "ta") released in the region's cinemas
+     * between {@code from} and {@code to}, most popular first. "Now playing" is ranked by worldwide
+     * popularity and is mostly Hollywood; this finds the Indian releases.
+     */
+    public List<Summary> recentReleases(String language, LocalDate from, LocalDate to) {
+        Page page = http.get()
+                .uri(uri -> uri.path("/discover/movie")
+                        .queryParam("region", region)
+                        .queryParam("with_original_language", language)
+                        .queryParam("with_release_type", "2|3") // limited or wide theatrical
+                        .queryParam("release_date.gte", from)
+                        .queryParam("release_date.lte", to)
+                        .queryParam("sort_by", "popularity.desc")
+                        .queryParam("include_adult", false)
+                        .queryParam("language", "en-US")
+                        .queryParam("page", 1)
+                        .build())
+                .retrieve()
+                .body(Page.class);
+        return page == null || page.results() == null ? List.of() : page.results();
     }
 
     /** Runtime, genres and every country's release dates and certificates. */

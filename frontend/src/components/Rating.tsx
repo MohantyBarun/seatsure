@@ -1,5 +1,8 @@
-/** Ratings based on fewer votes than this aren't shown: a 9.5 from three people says little. */
-export const MIN_VOTES = 10;
+/**
+ * Ratings based on fewer votes than this aren't shown: a new film's 9.0 from two dozen early fans says
+ * little, and looks inflated next to a 7.5 from thousands.
+ */
+export const MIN_VOTES = 50;
 
 /** 1234 -> "1.2k", 25000 -> "25k". */
 export function formatVotes(n: number): string {

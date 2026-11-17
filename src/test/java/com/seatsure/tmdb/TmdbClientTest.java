@@ -67,6 +67,25 @@ class TmdbClientTest {
     }
 
     @Test
+    @DisplayName("recent releases: one original language, released in the region's cinemas in the window")
+    void recentReleases() {
+        server.expect(requestTo(BASE + "/discover/movie?region=IN&with_original_language=ta&with_release_type=2%7C3"
+                        + "&release_date.gte=2026-10-06&release_date.lte=2026-11-17&sort_by=popularity.desc"
+                        + "&include_adult=false&language=en-US&page=1"))
+                .andExpect(header("Authorization", "Bearer secret-token"))
+                .andRespond(withSuccess("""
+                        {"results":[{"id":7,"title":"Jailer 2","overview":"He's back.","poster_path":"/j.jpg",
+                          "original_language":"ta","vote_average":7.1,"vote_count":88,"release_date":"2026-11-07"}]}
+                        """, MediaType.APPLICATION_JSON));
+
+        List<TmdbClient.Summary> movies = client.recentReleases("ta", java.time.LocalDate.of(2026, 10, 6),
+                java.time.LocalDate.of(2026, 11, 17));
+
+        assertThat(movies).extracting(TmdbClient.Summary::title).containsExactly("Jailer 2");
+        server.verify();
+    }
+
+    @Test
     void anErrorFromTmdb_isThrown_soTheCallerCanFallBack() {
         server.expect(requestTo(BASE + "/movie/upcoming?region=IN&language=en-US&page=1"))
                 .andRespond(withStatus(org.springframework.http.HttpStatus.UNAUTHORIZED));

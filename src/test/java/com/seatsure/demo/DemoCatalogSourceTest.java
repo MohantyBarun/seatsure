@@ -13,6 +13,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /** Which TMDB movies the demo uses, and that it falls back to the built-in movies whenever it must. */
@@ -134,6 +137,42 @@ class DemoCatalogSourceTest {
     }
 
     @Test
+    @DisplayName("Indian releases first (two per language at most), then the most popular of the rest, no film twice")
+    void indianReleasesFirst() {
+        nowPlaying(6); // Film 1..6, mostly Hollywood in real life
+        List<Summary> hindi = List.of(indian(301, "Hindi One", "hi"), indian(302, "Hindi Two", "hi"),
+                indian(303, "Hindi Three", "hi"));
+        List<Summary> tamil = List.of(indian(311, "Tamil One", "ta"), summary(1, "Film 1", "/poster1.jpg", 7.84, 1001));
+        when(tmdb.recentReleases(eq("hi"), any(), any())).thenReturn(hindi);
+        when(tmdb.recentReleases(eq("ta"), any(), any())).thenReturn(tamil);
+
+        DemoCatalog catalog = source.load();
+
+        assertThat(catalog.nowShowing()).extracting(DemoCatalog.Movie::title).containsExactly(
+                "Hindi One", "Hindi Two", "Tamil One", "Film 1", // Film 1 came with the Tamil results here
+                "Film 2", "Film 3", "Film 4", "Film 5", "Film 6");
+        assertThat(catalog.nowShowing()).extracting(DemoCatalog.Movie::language)
+                .startsWith("Hindi", "Hindi", "Tamil");
+        verify(tmdb).recentReleases(eq("hi"), eq(TODAY.minusDays(DemoCatalogSource.RECENT_DAYS)), eq(TODAY));
+    }
+
+    @Test
+    @DisplayName("one language's lookup failing doesn't lose the rest")
+    void failedLanguage_isSkipped() {
+        nowPlaying(5);
+        when(tmdb.recentReleases(anyString(), any(), any())).thenReturn(List.of());
+        when(tmdb.recentReleases(eq("hi"), any(), any())).thenThrow(new ResourceAccessException("read timed out"));
+        List<Summary> telugu = List.of(indian(321, "Telugu One", "te"));
+        when(tmdb.recentReleases(eq("te"), any(), any())).thenReturn(telugu);
+
+        DemoCatalog catalog = source.load();
+
+        assertThat(catalog.builtIn()).isFalse();
+        assertThat(catalog.nowShowing()).extracting(DemoCatalog.Movie::title).first().isEqualTo("Telugu One");
+        assertThat(catalog.nowShowing()).hasSize(6);
+    }
+
+    @Test
     void languageNames() {
         assertThat(DemoCatalogSource.languageName("hi")).isEqualTo("Hindi");
         assertThat(DemoCatalogSource.languageName("ta")).isEqualTo("Tamil");
@@ -157,6 +196,12 @@ class DemoCatalogSourceTest {
     private static Summary summary(int id, String title, String poster, double rating, int votes) {
         return new Summary(id, title, "What happens in " + title.toLowerCase() + ".", poster, "/backdrop" + id + ".jpg",
                 rating, votes, "2026-11-01", "hi");
+    }
+
+    private Summary indian(int id, String title, String language) {
+        details(id, 160, "UA", "2026-11-01");
+        return new Summary(id, title, "What happens in " + title.toLowerCase() + ".", "/p" + id + ".jpg", null, 8.0, 200,
+                "2026-11-01", language);
     }
 
     private void details(int id, Integer runtime, String certificate, String indiaRelease) {
