@@ -67,13 +67,13 @@ public class SeatStreams {
 
     public SseEmitter subscribe(Long showId) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT.toMillis());
-        Set<SseEmitter> watchers = byShow.computeIfAbsent(showId, id -> ConcurrentHashMap.newKeySet());
-        watchers.add(emitter);
-        Runnable remove = () -> {
-            watchers.remove(emitter);
-            waiting.remove(emitter);
-            byShow.computeIfPresent(showId, (id, set) -> set.isEmpty() ? null : set);
-        };
+        // Added inside compute(): atomic with drop(), which removes a show whose last stream closed
+        byShow.compute(showId, (id, set) -> {
+            Set<SseEmitter> watchers = set == null ? ConcurrentHashMap.newKeySet() : set;
+            watchers.add(emitter);
+            return watchers;
+        });
+        Runnable remove = () -> drop(showId, emitter);
         emitter.onCompletion(remove);
         emitter.onTimeout(remove);
         emitter.onError(e -> remove.run());
@@ -95,15 +95,28 @@ public class SeatStreams {
         send(emitter, SseEmitter.event().name("ready").data(Map.of("showId", showId)), onFailure);
     }
 
+    /**
+     * Forgets a stream: it closed, timed out, or a write to it failed (the browser went away). Every
+     * removal goes through here, so a show with no streams left disappears and {@link #hasWatchers}
+     * turns false (and the listener can let go of its connection).
+     */
+    private void drop(Long showId, SseEmitter emitter) {
+        waiting.remove(emitter);
+        byShow.computeIfPresent(showId, (id, set) -> {
+            set.remove(emitter);
+            return set.isEmpty() ? null : set;
+        });
+    }
+
     /** True while at least one seat map is open on this instance. */
     public boolean hasWatchers() {
-        return !byShow.isEmpty();
+        return byShow.values().stream().anyMatch(set -> !set.isEmpty());
     }
 
     /** Blocks until a seat map is open (true) or {@code max} has passed (false). */
     public boolean awaitWatchers(Duration max) {
         synchronized (demand) {
-            if (byShow.isEmpty()) {
+            if (!hasWatchers()) {
                 try {
                     demand.wait(max.toMillis());
                 } catch (InterruptedException e) {
@@ -111,7 +124,7 @@ public class SeatStreams {
                     return false;
                 }
             }
-            return !byShow.isEmpty();
+            return hasWatchers();
         }
     }
 
@@ -125,7 +138,7 @@ public class SeatStreams {
             live = true;
             int[] counts = {0, 0};
             byShow.forEach((showId, watchers) -> watchers.forEach(emitter -> {
-                Runnable drop = () -> watchers.remove(emitter);
+                Runnable drop = () -> drop(showId, emitter);
                 if (waiting.remove(emitter) != null) {
                     sendReady(emitter, showId, drop);
                     counts[0]++;
@@ -165,7 +178,7 @@ public class SeatStreams {
             event = SseEmitter.event().name("seats").data(new SeatsEvent(payload.s(), changes), MediaType.APPLICATION_JSON);
         }
         for (SseEmitter emitter : watchers) {
-            send(emitter, event, () -> watchers.remove(emitter));
+            send(emitter, event, () -> drop(payload.s(), emitter));
         }
     }
 
@@ -186,8 +199,8 @@ public class SeatStreams {
     /** A comment line every 20 seconds, so proxies don't close streams that are quiet. */
     @Scheduled(fixedDelay = 20_000)
     void heartbeat() {
-        byShow.values().forEach(watchers -> watchers.forEach(emitter ->
-                send(emitter, SseEmitter.event().comment("keep-alive"), () -> watchers.remove(emitter))));
+        byShow.forEach((showId, watchers) -> watchers.forEach(emitter ->
+                send(emitter, SseEmitter.event().comment("keep-alive"), () -> drop(showId, emitter))));
     }
 
     int openStreams() {
