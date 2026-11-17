@@ -1,0 +1,93 @@
+name: Load test
+
+# Runs the k6 load test against the production Docker image and a fresh PostgreSQL, then checks the
+# database for double bookings. On demand, and on PRs that change the load test itself.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths: ['loadtest/**', '.github/workflows/load-test.yml']
+
+jobs:
+  load-test:
+    name: k6 against the production image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: seatsure
+          POSTGRES_USER: seatsure
+          POSTGRES_PASSWORD: seatsure
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U seatsure" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: seatsure
+      PGPASSWORD: seatsure
+      PGDATABASE: seatsure
+      K6_VERSION: v0.54.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build -t seatsure:load .
+
+      # Same image, profile and connection pool (5) as Render. Memory is capped like Render's free
+      # tier (512 MB); CPU is one core, more than Render's free tier gives (0.1).
+      - name: Start SeatSure
+        run: |
+          docker run -d --name seatsure --network host --memory 512m --cpus 1 \
+            -e SPRING_PROFILES_ACTIVE=prod \
+            -e DB_URL=jdbc:postgresql://localhost:5432/seatsure -e DB_USERNAME=seatsure -e DB_PASSWORD=seatsure \
+            -e JWT_SECRET=load-test-secret-that-is-longer-than-sixty-four-bytes-for-hs512-signing-ok \
+            -e ADMIN_EMAIL=load.admin@seatsure.test -e ADMIN_PASSWORD='Load#Admin123' \
+            -e RATE_LIMIT_ENABLED=false -e TRUSTED_PROXIES=0 \
+            seatsure:load
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/actuator/health && exit 0
+            sleep 2
+          done
+          docker logs seatsure | tail -50
+          exit 1
+
+      - name: Install k6
+        run: |
+          curl -sSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
+          k6 version
+
+      - name: Run k6
+        run: |
+          k6 run -e BASE_URL=http://localhost:8080 \
+            -e ADMIN_EMAIL=load.admin@seatsure.test -e ADMIN_PASSWORD='Load#Admin123' \
+            -e SUMMARY_FILE=summary.json loadtest/seatsure.js
+
+      - name: Check the database
+        if: always()
+        run: |
+          psql -At -F '|' \
+            -v stampede="$(jq .showIds.stampede summary.json)" \
+            -v best="$(jq .showIds.bestSeats summary.json)" \
+            -v checkout="$(jq .showIds.checkout summary.json)" \
+            -f loadtest/invariants.sql | tee invariants.txt
+
+      - name: Report
+        if: always()
+        run: python3 loadtest/report.py summary.json invariants.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: App logs on failure
+        if: failure()
+        run: docker logs seatsure 2>&1 | grep -E '"log.level":"(WARN|ERROR)"' | tail -100
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: |
+            summary.json
+            invariants.txt
+          if-no-files-found: ignore
