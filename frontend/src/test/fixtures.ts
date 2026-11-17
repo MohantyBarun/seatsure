@@ -21,7 +21,7 @@ export function seatMap(overrides: Partial<SeatMap> = {}): SeatMap {
 
 export const movie: MovieCard = {
   id: 10, title: 'Paper Boats', language: 'Tamil', certificate: 'U', genres: ['Family', 'Drama'],
-  durationMinutes: 118, releaseDate: '2026-10-01', posterUrl: null,
+  durationMinutes: 118, releaseDate: '2026-10-01', posterUrl: null, backdropUrl: null, rating: 7.6, voteCount: 2400,
 };
 
 export const showDetail: ShowDetail = {

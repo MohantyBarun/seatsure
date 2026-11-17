@@ -164,7 +164,7 @@ com.seatsure
 
 | | Customer | Admin |
 |---|---|---|
-| **Browse** | City picker, now showing with language/genre filters, coming soon, movie details, date strip, showtimes by cinema with availability | All movies, cinemas and screens |
+| **Browse** | City picker, now showing with language/genre filters, coming soon, movie details with posters, artwork and TMDB ratings, date strip, showtimes by cinema with availability | All movies, cinemas and screens |
 | **Book** | Live seat map (Recliner / Prime / Classic), "pick for me" best seats with a score and one-click hold, up to 10 seats, 10-minute hold with a countdown, mock payment, ticket with reference | — |
 | **After booking** | My bookings, cancel up to 2 hours before for a refund | Latest bookings across all cinemas |
 | **Sold out** | Waitlist (1–6 seats), place in line, "Pay now" when seats are offered | — |
@@ -173,7 +173,9 @@ com.seatsure
 
 **Frontend:** React 18, TypeScript (strict), Vite, Tailwind CSS. Dark theme with generated posters, accessible dialogs and forms, single-flight token refresh, route guards per role, times always in IST, and a "server is waking up" notice for cold starts.
 
-**Demo mode** (`DEMO_ENABLED=true`): seeds 8 cinemas in Mumbai, Bengaluru, Delhi NCR and Bhubaneswar (two screens each), 10 movies, shows from yesterday to two days ahead, and realistic bookings. Passwordless demo logins mean no credentials are published. `DEMO_RESET_CRON` reseeds around the new day each night.
+**Demo mode** (`DEMO_ENABLED=true`): seeds 8 cinemas in Mumbai, Bengaluru, Delhi NCR and Bhubaneswar (two screens each), shows from yesterday to two days ahead, and realistic bookings. Passwordless demo logins mean no credentials are published. `DEMO_RESET_CRON` reseeds around the new day each night.
+
+**Real movies** (`TMDB_API_TOKEN`): the demo shows what's actually in Indian cinemas, with posters, artwork, synopses, Indian certificates and ratings from [TMDB](https://www.themoviedb.org). Each cinema's lineup favours its city's languages (Odia films in Bhubaneswar, Kannada in Bengaluru). Movies are fetched only when the demo is seeded, never while serving visitors. Without a token, or if TMDB is down or slow, the demo uses 10 built-in fictional movies, so it never depends on TMDB. Movies missing a poster, a synopsis or a runtime that fits the demo's show slots are skipped rather than patched up. Cinemas, showtimes and prices remain made up.
 
 ## 🛠️ Tech stack
 - **Backend:** Java 21, Spring Boot 3.4 (Web, Data JPA, Security, Validation), PostgreSQL, Flyway, JWT (jjwt), Redis, RabbitMQ (Spring AMQP), Resilience4j, Spring Mail, Micrometer (Prometheus, OpenTelemetry), springdoc OpenAPI, Lombok, Maven
@@ -227,6 +229,7 @@ npm run dev                   # http://localhost:5173
 | `SPRING_PROFILES_ACTIVE` | No | `dev` (default) or `prod` |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated frontend origins (default `http://localhost:5173,http://localhost:3000`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Prod | Admin account created on startup if it doesn't exist |
+| `TMDB_API_TOKEN` | No | TMDB API read access token, free for non-commercial use ([get one](https://www.themoviedb.org/settings/api)). The demo then uses real movies. Some Indian ISPs (Jio, for one) block themoviedb.org, so locally you may need another DNS such as 1.1.1.1 |
 | `DEMO_ENABLED` / `DEMO_RESET_CRON` | No | Seed demo data and enable demo logins; optional cron to reseed (e.g. `0 0 3 * * *`). Startup also reseeds when no shows are left after tomorrow. **The reset wipes the catalogue, bookings and customers** (admins are kept) |
 | `PAYMENT_WEBHOOK_SECRET` | No | HMAC key for payment webhooks (default: derived from `JWT_SECRET`) |
 | `PAYMENT_WEBHOOK_URL` | No | Where the mock gateway sends webhooks (default: this server) |

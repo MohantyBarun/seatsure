@@ -31,6 +31,7 @@ public class DemoScheduler implements ApplicationRunner {
     private static final Duration SEED_LOCK_AT_MOST = Duration.ofMinutes(10);
 
     private final DemoDataService demo;
+    private final DemoCatalogSource catalogs;
     private final LockingTaskExecutor locks;
     private final Clock clock;
 
@@ -40,7 +41,8 @@ public class DemoScheduler implements ApplicationRunner {
         AtomicBoolean ran = new AtomicBoolean();
         locks.executeWithLock((Runnable) () -> {
             ran.set(true);
-            demo.seedIfEmptyOrStale();
+            // Movies are fetched (from TMDB, if configured) only when they'll be used, before the seed transaction
+            demo.seedIfEmptyOrStale(demo.needsSeed() ? catalogs.load() : null);
         }, new LockConfiguration(clock.instant(), "demo-seed", SEED_LOCK_AT_MOST, Duration.ZERO));
         if (!ran.get()) {
             log.info("Demo mode: another instance is seeding; skipping");
@@ -51,6 +53,6 @@ public class DemoScheduler implements ApplicationRunner {
     @Scheduled(cron = "${app.demo.reset-cron:-}", zone = "Asia/Kolkata")
     @SchedulerLock(name = "demo-reset", lockAtLeastFor = "PT5M", lockAtMostFor = "PT15M")
     public void scheduledReset() {
-        demo.reset();
+        demo.reset(catalogs.load());
     }
 }

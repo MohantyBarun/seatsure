@@ -44,6 +44,11 @@ export interface MovieCard {
   /** yyyy-mm-dd */
   releaseDate: string;
   posterUrl: string | null;
+  /** Wide artwork, when the movie has some. */
+  backdropUrl: string | null;
+  /** TMDB users' average out of 10 and how many votes it's from; null when unrated. */
+  rating: number | null;
+  voteCount: number | null;
 }
 
 export interface MovieDetail extends MovieCard {
