@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.seatsure.dto.CheckoutDtos.HeldSeat;
 import com.seatsure.dto.CheckoutDtos.HoldView;
-import com.seatsure.exception.ConflictException;
 import com.seatsure.service.BestSeatService;
 import com.seatsure.service.HoldService;
 import com.seatsure.support.FullAppIntegrationTest;
@@ -146,7 +145,7 @@ class BestSeatsIntegrationTest {
     }
 
     @Test
-    @DisplayName("20 customers ask for the best pair at the same moment: all 20 get their own pair")
+    @DisplayName("20 customers ask for the best pair at the same moment: they queue, and all 20 get a pair first time")
     void everyoneOfferedTheSameSeats_endsUpWithTheirOwn() throws Exception {
         int customers = 20;
         ShowFixture show = fixtures.show(8, 10); // 80 seats for 40 wanted: nobody should go without
@@ -164,7 +163,7 @@ class BestSeatsIntegrationTest {
                 futures.add(pool.submit(() -> {
                     start.await();
                     try {
-                        won.add(holdWithRetry(user, show.showId()));
+                        won.add(bestSeats.holdBest(user, show.showId(), 2, null)); // no retries by the client
                     } catch (Throwable t) {
                         failed.add(t);
                     }
@@ -179,7 +178,7 @@ class BestSeatsIntegrationTest {
             pool.shutdownNow();
         }
 
-        assertThat(failed).as("no deadlocks, lock timeouts or other errors").isEmpty();
+        assertThat(failed).as("nobody was told to try again, no deadlocks or lock timeouts").isEmpty();
         assertThat(won).hasSize(customers);
         List<Long> heldSeatIds = won.stream().flatMap(h -> h.seats().stream()).map(HeldSeat::seatId).toList();
         assertThat(heldSeatIds).as("no seat was given to two customers").doesNotHaveDuplicates().hasSize(2 * customers);
@@ -193,6 +192,8 @@ class BestSeatsIntegrationTest {
                 Long.class, show.showId())).isEqualTo(2L * customers);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM seat_holds WHERE show_id = ? AND status = 'ACTIVE'",
                 Long.class, show.showId())).isEqualTo((long) customers);
+        // Queued one after another, they took the best pairs in order: the best pair of the hall is among them
+        assertThat(won.stream().map(BestSeatsIntegrationTest::labels).toList()).contains(List.of("F5", "F6"));
     }
 
     @Test
@@ -207,22 +208,6 @@ class BestSeatsIntegrationTest {
     }
 
     // ---------------------------------------------------------------- helpers
-
-    /**
-     * What the browser does: "seats are going fast, try again" (the service lost several races in
-     * a row) is retried by the customer. Any other failure is a real one.
-     */
-    private HoldView holdWithRetry(Long userId, Long showId) {
-        for (int i = 0; ; i++) {
-            try {
-                return bestSeats.holdBest(userId, showId, 2, null);
-            } catch (ConflictException e) {
-                if (i == 20 || !e.getMessage().contains("going fast")) {
-                    throw e;
-                }
-            }
-        }
-    }
 
     private long available(Long showId) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM show_seats WHERE show_id = ? AND status = 'AVAILABLE'",
