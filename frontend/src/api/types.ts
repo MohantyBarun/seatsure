@@ -362,7 +362,14 @@ export interface SystemSnapshot {
   infrastructure: {
     cache: string; rateLimiter: string; messaging: string; email: string; tracingExport: boolean; demoMode: boolean;
   };
-  http: { requests: number; clientErrors: number; serverErrors: number; meanMs: number; maxMs: number };
+  /**
+   * medianMs/p95Ms: approximate, from the response-time histogram; null with no traffic. They cover
+   * measuredRequests: requests since the first minute after startup, or all of them while warmingUp.
+   */
+  http: {
+    requests: number; clientErrors: number; serverErrors: number;
+    medianMs: number | null; p95Ms: number | null; measuredRequests: number; warmingUp: boolean;
+  };
   caches: { name: string; hits: number; misses: number; hitRate: number | null; size: number | null }[];
   outbox: {
     pending: number; failed: number; published: number; relayedPublished: number; relayedRetries: number; relayedFailed: number;

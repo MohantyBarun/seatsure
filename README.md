@@ -169,7 +169,7 @@ com.seatsure
 | **After booking** | My bookings, cancel up to 2 hours before for a refund | Latest bookings across all cinemas |
 | **Sold out** | Waitlist (1–6 seats), place in line, "Pay now" when seats are offered | — |
 | **Manage** | Account, change password | Add/edit movies, add cinemas, build a screen's seat layout (rows, categories, aisles), schedule shows (no overlaps on a screen, plus 15 minutes to clean), cancel a show (every booking refunded and emailed) |
-| **Insight** | — | Sales dashboard (today, last 7 days, top movies, busiest shows), Emails, System |
+| **Insight** | — | Sales dashboard (today, last 7 days, top movies, busiest shows), customer emails and whether each went out. Kept apart, for developers: **Under the hood** (caches, rate limits, outbox, circuit breakers, median/p95 latency after start-up) |
 
 **Frontend:** React 18, TypeScript (strict), Vite, Tailwind CSS. Dark theme with generated posters, accessible dialogs and forms, single-flight token refresh, route guards per role, times always in IST, and a "server is waking up" notice for cold starts.
 

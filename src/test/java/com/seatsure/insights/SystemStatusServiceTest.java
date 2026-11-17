@@ -8,7 +8,8 @@ import com.seatsure.notification.EmailSender;
 import com.seatsure.repository.OutboxEventRepository;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.micrometer.core.instrument.Timer;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.cache.Cache;
@@ -25,7 +26,8 @@ import static org.mockito.Mockito.when;
 
 class SystemStatusServiceTest {
 
-    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    /** The registry production uses: unlike SimpleMeterRegistry, its snapshots include histogram buckets. */
+    private final PrometheusMeterRegistry meters = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
     private final OutboxEventRepository outbox = mock(OutboxEventRepository.class);
     private final EmailSender emailSender = mock(EmailSender.class);
     private final CircuitBreakerRegistry breakers = CircuitBreakerRegistry.ofDefaults();
@@ -42,9 +44,10 @@ class SystemStatusServiceTest {
                 emailSender, false, false, true, "", new RateLimitProperties(true, 10, 5, 20, 30, 300), Clock.systemUTC());
     }
 
+    /** Like production: application.properties turns on the percentile histogram for these timers. */
     private void request(String uri, String outcome, long millis) {
-        Timer.builder("http.server.requests").tag("uri", uri).tag("outcome", outcome).register(meters)
-                .record(Duration.ofMillis(millis));
+        Timer.builder("http.server.requests").tag("uri", uri).tag("outcome", outcome).publishPercentileHistogram()
+                .register(meters).record(Duration.ofMillis(millis));
     }
 
     @Test
@@ -61,8 +64,50 @@ class SystemStatusServiceTest {
         assertThat(http.requests()).isEqualTo(4);
         assertThat(http.clientErrors()).isEqualTo(1);
         assertThat(http.serverErrors()).isEqualTo(1);
-        assertThat(http.meanMs()).isEqualTo(40.0);
-        assertThat(http.maxMs()).isEqualTo(90.0);
+        assertThat(http.measuredRequests()).as("admin and actuator polling left out").isEqualTo(4);
+        assertThat(http.warmingUp()).isTrue();
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("latency is the median and p95, so one very slow request doesn't dominate it")
+    void latency_isMedianAndP95_notMean() {
+        for (int i = 0; i < 95; i++) {
+            request("/cities", "SUCCESS", 20);
+        }
+        for (int i = 0; i < 4; i++) {
+            request("/shows/{showId}/seats", "SUCCESS", 80);
+        }
+        request("/cities", "SUCCESS", 28_000); // a cold start
+
+        SystemStatusService.Http http = service.http();
+
+        // Histogram buckets: the answer is approximate, but in the right bucket and nowhere near 28 s
+        assertThat(http.medianMs()).isBetween(15.0, 25.0);
+        assertThat(http.p95Ms()).isBetween(15.0, 25.0);
+        assertThat(http.measuredRequests()).isEqualTo(100);
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("after the warm-up, the cold start no longer counts")
+    void afterWarmup_coldStartIsLeftOut() {
+        request("/cities", "SUCCESS", 28_000); // the request that woke the server
+        service.endWarmup();
+        for (int i = 0; i < 10; i++) {
+            request("/cities", "SUCCESS", 50);
+        }
+
+        SystemStatusService.Http http = service.http();
+
+        assertThat(http.warmingUp()).isFalse();
+        assertThat(http.requests()).as("totals still count every request").isEqualTo(11);
+        assertThat(http.measuredRequests()).isEqualTo(10);
+        assertThat(http.p95Ms()).isBetween(40.0, 60.0);
+    }
+
+    @Test
+    void latency_withNoTraffic_isUnknown() {
+        assertThat(service.http().medianMs()).isNull();
+        assertThat(service.http().p95Ms()).isNull();
     }
 
     @Test

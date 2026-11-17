@@ -1,9 +1,11 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { Route } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import type { AdminMovie, CinemaView } from '../../api/types';
+import type { AdminMovie, CinemaView, SystemSnapshot } from '../../api/types';
+import { AdminLayout } from '../../components/AdminLayout';
 import { movie } from '../../test/fixtures';
 import { jsonResponse, mockFetch, renderAt, signInAsAdmin } from '../../test/helpers';
+import { SystemPage } from './InsightsPages';
 import { AdminMoviesPage } from './MoviesPage';
 import { AdminShowsPage } from './ShowsPage';
 
@@ -51,5 +53,32 @@ describe('AdminShowsPage', () => {
 
     const select = await screen.findByLabelText('Movie');
     expect(select).toHaveValue('23');
+  });
+});
+
+describe('Under the hood', () => {
+  const snapshot: SystemSnapshot = {
+    generatedAt: '2030-01-01T10:00:00Z',
+    infrastructure: { cache: 'Caffeine (in-process)', rateLimiter: 'In-memory', messaging: 'Outbox', email: 'Logged only',
+      tracingExport: false, demoMode: true },
+    http: { requests: 120, clientErrors: 2, serverErrors: 0, medianMs: 12.4, p95Ms: 2340, measuredRequests: 110, warmingUp: false },
+    caches: [], outbox: { pending: 0, failed: 0, published: 3, relayedPublished: 3, relayedRetries: 0, relayedFailed: 0 },
+    rateLimits: { rejectedByRule: {}, limitsPerMinute: {}, backendErrors: 0 }, circuitBreakers: [], operations: [],
+    jvm: { uptimeSeconds: 600, heapUsedMb: 120, heapMaxMb: 384, threads: 30 },
+  };
+
+  it('sits apart from what a cinema admin uses, and says so', async () => {
+    signInAsAdmin();
+    mockFetch((url) => (url.pathname === '/admin/system' ? jsonResponse(snapshot) : jsonResponse({}, 404)));
+    renderAt('/admin/system', <Route path="/admin" element={<AdminLayout />}><Route path="system" element={<SystemPage />} /></Route>);
+
+    expect(within(screen.getByRole('navigation', { name: 'Admin' })).getByRole('link', { name: /customer emails/i })).toBeInTheDocument();
+    expect(within(screen.getByRole('navigation', { name: 'Admin' })).queryByRole('link', { name: /under the hood/i })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('navigation', { name: 'For developers' })).getByRole('link', { name: /under the hood/i })).toBeInTheDocument();
+    expect(await screen.findByText(/a cinema admin wouldn't see this page/i)).toBeInTheDocument();
+
+    // Median and p95, not a mean a single cold start can wreck
+    expect(screen.getByText('≈ 12 ms')).toBeInTheDocument();
+    expect(screen.getByText('p95 ≈ 2.3 s · after the first minute')).toBeInTheDocument();
   });
 });
