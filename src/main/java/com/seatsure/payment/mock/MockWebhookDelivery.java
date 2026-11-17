@@ -1,6 +1,7 @@
 package com.seatsure.payment.mock;
 
 import com.seatsure.payment.WebhookSigner;
+import com.seatsure.scheduling.DueWork;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
@@ -14,11 +15,13 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.client.RestClient;
 
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The mock gateway's side of webhooks: POSTs each queued event to SeatSure's webhook URL, signed,
@@ -29,6 +32,9 @@ import java.util.List;
  * SKIP LOCKED) and the HTTP call happens after that commits, so no database transaction or row
  * lock is held while waiting on the network. If this process dies mid-send, the lease runs out
  * and the event is sent again: the receiver de-duplicates by event id.
+ *
+ * <p>New events are sent right after they're queued. The schedule only picks up retries, and only
+ * queries the database when one is due or at the hourly safety sweep ({@link DueWork}).
  */
 @Slf4j
 @Component
@@ -48,14 +54,17 @@ public class MockWebhookDelivery {
     private final String configuredUrl;
     private final Clock clock;
     private final RestClient http;
+    private final DueWork due;
 
     public MockWebhookDelivery(JdbcTemplate jdbc, WebhookSigner signer, Environment environment,
-                               @Value("${app.payments.webhook-url:}") String configuredUrl, Clock clock) {
+                               @Value("${app.payments.webhook-url:}") String configuredUrl, Clock clock,
+                               @Value("${app.jobs.idle-sweep:PT1H}") Duration idleSweep) {
         this.jdbc = jdbc;
         this.signer = signer;
         this.environment = environment;
         this.configuredUrl = configuredUrl;
         this.clock = clock;
+        this.due = new DueWork(clock, idleSweep);
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));
         factory.setReadTimeout(Duration.ofSeconds(10));
@@ -70,7 +79,13 @@ public class MockWebhookDelivery {
 
     @Scheduled(fixedDelayString = "${app.payments.mock.delivery-interval:PT2S}", initialDelayString = "PT10S")
     public void poll() {
+        if (!due.claim()) {
+            return;
+        }
         deliverDue();
+        Timestamp next = jdbc.queryForObject(
+                "SELECT MIN(next_attempt_at) FROM mock_gateway_events WHERE status = 'PENDING'", Timestamp.class);
+        due.swept(Optional.ofNullable(next).map(Timestamp::toInstant));
     }
 
     private record Claimed(String id, String payload, int attempts) {
@@ -116,8 +131,10 @@ public class MockWebhookDelivery {
             if (backoff.compareTo(MAX_BACKOFF) > 0) {
                 backoff = MAX_BACKOFF;
             }
+            Instant retryAt = clock.instant().plus(backoff);
             jdbc.update("UPDATE mock_gateway_events SET attempts = ?, last_error = ?, next_attempt_at = ? WHERE id = ?",
-                    attempts, truncate(error), clock.instant().plus(backoff).atOffset(ZoneOffset.UTC), event.id());
+                    attempts, truncate(error), retryAt.atOffset(ZoneOffset.UTC), event.id());
+            due.expect(retryAt);
             log.warn("[mock gateway] delivery of {} failed (attempt {}), retrying in {}s: {}", event.id(), attempts,
                     backoff.toSeconds(), error);
         }

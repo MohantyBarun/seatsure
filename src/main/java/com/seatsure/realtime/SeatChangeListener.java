@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.jdbc.JdbcConnectionDetails;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -15,12 +16,20 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.Instant;
 
 /**
  * LISTENs for seat changes on a dedicated database connection (not one borrowed from the pool,
- * which is small on the free tier) and hands them to {@link SeatStreams}. Reconnects with backoff
- * if the connection drops; clients reload their map when their own stream reconnects, so nothing
- * is lost for good during a gap.
+ * which is small on the free tier) and hands them to {@link SeatStreams}.
+ *
+ * <p><b>Only while someone is watching.</b> The connection opens when the first seat map opens on
+ * this instance and closes {@code app.realtime.idle-grace} after the last one closes. Held open
+ * around the clock, it kept the free Neon database from ever going to sleep: Neon suspends after a
+ * few minutes without queries and cuts the connection, and reconnecting woke it straight back up.
+ *
+ * <p>Seat maps opened while the connection isn't up get "ready" only once LISTEN is active
+ * ({@link SeatStreams#listenerUp}), so the client never fetches a map whose later changes could be
+ * missed. If the connection drops, it reconnects with backoff and the maps that were open reload.
  */
 @Slf4j
 @Component
@@ -35,13 +44,15 @@ public class SeatChangeListener {
     private final ObjectMapper objectMapper;
     private volatile boolean running;
     private volatile boolean listening;
-    private boolean everConnected; // only touched by the listener thread
+    private final Duration idleGrace;
     private Thread thread;
 
-    public SeatChangeListener(JdbcConnectionDetails db, SeatStreams streams, ObjectMapper objectMapper) {
+    public SeatChangeListener(JdbcConnectionDetails db, SeatStreams streams, ObjectMapper objectMapper,
+                              @Value("${app.realtime.idle-grace:PT1M}") Duration idleGrace) {
         this.db = db;
         this.streams = streams;
         this.objectMapper = objectMapper;
+        this.idleGrace = idleGrace;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -66,31 +77,27 @@ public class SeatChangeListener {
     private void loop() {
         Duration backoff = Duration.ofSeconds(1);
         while (running) {
+            if (!streams.awaitWatchers(Duration.ofSeconds(5))) {
+                continue; // nobody is watching a seat map: no connection, so the database can sleep
+            }
             try (Connection connection = DriverManager.getConnection(db.getJdbcUrl(), db.getUsername(), db.getPassword())) {
                 try (Statement st = connection.createStatement()) {
                     st.execute("LISTEN " + SeatEvents.CHANNEL);
                 }
                 PGConnection pg = connection.unwrap(PGConnection.class);
-                boolean reconnected = everConnected;
-                listening = true;
-                everConnected = true;
-                backoff = Duration.ofSeconds(1);
-                log.info("Listening for seat changes");
-                if (reconnected) {
-                    // Notifications sent while we were disconnected are gone: open maps must refetch
-                    log.info("Seat change listener reconnected; asked {} open seat map(s) to reload", streams.reloadAll());
-                }
-                while (running) {
-                    PGNotification[] notifications = pg.getNotifications(POLL_MILLIS);
-                    if (notifications == null) {
-                        continue;
-                    }
-                    for (PGNotification n : notifications) {
-                        dispatch(n.getParameter());
-                    }
+                try {
+                    listening = true;
+                    backoff = Duration.ofSeconds(1);
+                    SeatStreams.ListenerUp up = streams.listenerUp();
+                    log.info("Listening for seat changes ({} seat map(s) now ready, {} asked to reload)",
+                            up.readied(), up.reloaded());
+                    listenWhileWatched(pg);
+                } finally {
+                    // Before the connection closes, and before any backoff: new maps must wait from here on
+                    listening = false;
+                    streams.listenerDown();
                 }
             } catch (Exception e) {
-                listening = false;
                 if (!running) {
                     return;
                 }
@@ -101,6 +108,27 @@ public class SeatChangeListener {
                     return;
                 }
                 backoff = backoff.multipliedBy(2).compareTo(MAX_BACKOFF) > 0 ? MAX_BACKOFF : backoff.multipliedBy(2);
+            }
+        }
+    }
+
+    /** Dispatches notifications until nobody has watched a seat map for {@link #idleGrace}. */
+    private void listenWhileWatched(PGConnection pg) throws Exception {
+        Instant idleSince = null;
+        while (running) {
+            PGNotification[] notifications = pg.getNotifications(POLL_MILLIS);
+            if (notifications != null) {
+                for (PGNotification n : notifications) {
+                    dispatch(n.getParameter());
+                }
+            }
+            if (streams.hasWatchers()) {
+                idleSince = null;
+            } else if (idleSince == null) {
+                idleSince = Instant.now();
+            } else if (Duration.between(idleSince, Instant.now()).compareTo(idleGrace) >= 0) {
+                log.info("No seat maps open for {}s; closing the listener connection", idleGrace.toSeconds());
+                return;
             }
         }
     }

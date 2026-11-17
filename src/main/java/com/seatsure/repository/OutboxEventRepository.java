@@ -22,6 +22,10 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
 
     long countByStatus(OutboxEvent.Status status);
 
+    /** When the next pending event is due (null if none), for the relay's schedule. */
+    @Query("SELECT MIN(e.nextAttemptAt) FROM OutboxEvent e WHERE e.status = com.seatsure.entity.OutboxEvent.Status.PENDING")
+    Instant nextAttemptAt();
+
     java.util.Optional<OutboxEvent> findFirstByEventTypeOrderByCreatedAtDesc(String eventType);
 
     /** Newest first, for the admin Emails page. */

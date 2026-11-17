@@ -8,6 +8,7 @@ import com.seatsure.exception.ResourceNotFoundException;
 import com.seatsure.outbox.OutboxEvents;
 import com.seatsure.outbox.OutboxService;
 import com.seatsure.realtime.SeatEvents;
+import com.seatsure.scheduling.HoldExpiries;
 import com.seatsure.repository.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,12 +43,13 @@ public class WaitlistService {
     private final Pricing pricing;
     private final OutboxService outbox;
     private final SeatEvents seatEvents;
+    private final HoldExpiries expiries;
     private final Clock clock;
     private final Duration holdTtl;
 
     public WaitlistService(WaitlistRepository waitlist, ShowRepository shows, ShowSeatRepository showSeats,
                            SeatHoldRepository holds, UserRepository users, Pricing pricing, OutboxService outbox,
-                           SeatEvents seatEvents,
+                           SeatEvents seatEvents, HoldExpiries expiries,
                            Clock clock, @Value("${app.holds.ttl:PT10M}") Duration holdTtl) {
         this.waitlist = waitlist;
         this.shows = shows;
@@ -57,6 +59,7 @@ public class WaitlistService {
         this.pricing = pricing;
         this.outbox = outbox;
         this.seatEvents = seatEvents;
+        this.expiries = expiries;
         this.clock = clock;
         this.holdTtl = holdTtl;
     }
@@ -139,6 +142,7 @@ public class WaitlistService {
         SeatHold hold = new SeatHold(show, entry.getUser(), SeatHold.Source.WAITLIST, now, now.plus(holdTtl));
         hold.price(seats.size(), quote.ticketsPaise(), quote.feePaise());
         holds.save(hold);
+        expiries.expect(hold.getExpiresAt());
         seats.forEach(ss -> ss.hold(hold));
         entry.offer(hold, now);
 

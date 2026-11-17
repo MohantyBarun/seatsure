@@ -61,7 +61,7 @@ flowchart LR
 ### Correctness under concurrency
 - **No seat is held twice.** A hold locks its seats with `SELECT … FOR UPDATE` **in seat-id order**, so overlapping requests queue up instead of deadlocking. It then checks that every seat is still available and marks them held, all in one transaction. A competing request waits for the lock, then gets a **409** naming the taken seats.
 - **One lock order everywhere:** show (shared) → hold → payment → seats → waitlist entries. Cancelling a show takes the show lock exclusively, so it waits for holds in flight and blocks new ones.
-- **Expired holds** are swept every 10 seconds, each in its own transaction. Locking several holds' seats at once would take them out of id order and could deadlock with customers.
+- **Expired holds** are swept as they fall due, each in its own transaction. Locking several holds' seats at once would take them out of id order and could deadlock with customers.
 - Choosing seats again for the same show replaces your hold: seats you keep stay yours, and the others are freed.
 - **Tested with real PostgreSQL:** 30 customers grabbing the same seat at once gives exactly one winner; overlapping multi-seat requests in random order never hold a seat twice and never deadlock; a show cancelled while customers are holding seats ends with nothing held.
 
@@ -84,6 +84,7 @@ flowchart LR
 ### Live seat map
 - Every seat change calls `pg_notify` **inside the transaction that makes it**. PostgreSQL delivers a notification only when its transaction commits, in commit order, and never for one that rolls back. So a seat a customer failed to hold is never shown as taken, and every app instance hears every change.
 - Each instance `LISTEN`s on a dedicated connection (not one borrowed from the small free-tier pool) and fans changes out to browsers over **Server-Sent Events** (`GET /shows/{id}/seats/stream`). It reconnects with backoff if that connection drops, then tells every open map to **reload**: notifications sent while it was disconnected are gone for good.
+- **It only listens while someone is watching.** The connection opens with the first open seat map and closes a minute after the last one. A stream opened while it's down gets `ready` only once `LISTEN` is active, so the guarantee below still holds.
 - On shutdown (every deploy) all streams are closed first, so graceful shutdown doesn't wait out its timeout on connections that never finish; browsers reconnect to a live instance by themselves.
 - **The client subscribes first, then fetches.** The stream sends `ready`, then the browser fetches the map and replays any events that arrived meanwhile, so no change slips through between the snapshot and the stream. A dropped stream reconnects and refetches.
 
@@ -146,6 +147,7 @@ com.seatsure
 ├── messaging/   RabbitMQ transport and consumer (optional)
 ├── notification/ email composition, sending, idempotent consumer
 ├── realtime/    LISTEN/NOTIFY listener and SSE fan-out
+├── scheduling/  when a background job next has work (so idle jobs leave the database alone)
 ├── idempotency/ Idempotency-Key filter and store
 ├── ratelimit/   client IP resolution and rate limiting
 ├── insights/    the admin Emails and System pages
@@ -225,7 +227,7 @@ npm run dev                   # http://localhost:5173
 | `SPRING_PROFILES_ACTIVE` | No | `dev` (default) or `prod` |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated frontend origins (default `http://localhost:5173,http://localhost:3000`) |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Prod | Admin account created on startup if it doesn't exist |
-| `DEMO_ENABLED` / `DEMO_RESET_CRON` | No | Seed demo data and enable demo logins; optional cron to reseed (e.g. `0 0 3 * * *`). **The reset wipes the catalogue, bookings and customers** (admins are kept) |
+| `DEMO_ENABLED` / `DEMO_RESET_CRON` | No | Seed demo data and enable demo logins; optional cron to reseed (e.g. `0 0 3 * * *`). Startup also reseeds when no shows are left after tomorrow. **The reset wipes the catalogue, bookings and customers** (admins are kept) |
 | `PAYMENT_WEBHOOK_SECRET` | No | HMAC key for payment webhooks (default: derived from `JWT_SECRET`) |
 | `PAYMENT_WEBHOOK_URL` | No | Where the mock gateway sends webhooks (default: this server) |
 | `REALTIME_ENABLED` | No | `false` turns off the live seat stream (default `true`) |
@@ -313,6 +315,14 @@ Run it yourself from the Actions tab (**Load test → Run workflow**); it also r
 1. **Neon:** create a project near your Render region and copy the **direct** (non-`-pooler`) connection string. The live seat map needs `LISTEN`, which the pooler doesn't support. Split it into `DB_URL=jdbc:postgresql://HOST/DBNAME?sslmode=require`, `DB_USERNAME` and `DB_PASSWORD`.
 2. **Render:** **New → Blueprint**, select the repo, and enter the secrets it asks for (`DB_*`, `ADMIN_*`, `CORS_ALLOWED_ORIGINS`). `JWT_SECRET` is generated. Render only redeploys when backend files change.
 3. **Vercel:** import the repo with root directory `frontend`, set `VITE_API_BASE_URL` to the Render URL, then add the Vercel URL to `CORS_ALLOWED_ORIGINS` on Render.
+
+### Staying up on free tiers
+
+Render's free web service sleeps after 15 minutes without traffic, and Neon's free database after 5 minutes without queries (with 100 compute-hours a month, about 400 hours at the smallest size). SeatSure is built so that the **app can stay awake while the database still sleeps when nobody is using the site**:
+- **Keep the app awake with a free uptime monitor** (e.g. UptimeRobot) calling `GET /actuator/health/liveness` every 5 minutes. That check never touches the database. Render's 750 free hours a month cover one service running all month.
+- **Background jobs only query the database when something is due.** Hold expiry, outbox retries and mock-gateway retries know when their next item is due and check memory otherwise, plus one safety sweep an hour, aligned to the clock so all jobs sweep together (`app.jobs.idle-sweep`).
+- **The seat-map listener connects only while a seat map is open** (`app.realtime.idle-grace`), and the connection pool empties after a minute idle.
+- **The demo reseeds itself.** The nightly reset (`DEMO_RESET_CRON`) only runs if the app is awake at 3 AM. As a backstop, every startup checks for shows after tomorrow and reseeds if there are none.
 
 Optional free add-ons (everything works without them): [Upstash](https://upstash.com) Redis, [CloudAMQP](https://www.cloudamqp.com) RabbitMQ, [Brevo](https://www.brevo.com) SMTP, and any Prometheus / Grafana Cloud scraper.
 

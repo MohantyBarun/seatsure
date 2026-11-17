@@ -24,6 +24,7 @@ import java.util.Optional;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -41,7 +42,7 @@ class OutboxRelayTest {
     void setUp() {
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         relay = new OutboxRelay(repository, transport, transactionManager, meters, 2, 3, Duration.ofDays(7),
-                Duration.ofMinutes(5), Clock.systemUTC());
+                Duration.ofMinutes(5), Clock.systemUTC(), Duration.ofHours(1));
         // The outcome is recorded on a fresh load of the event, in its own transaction
         lenient().when(repository.findById(any())).thenAnswer(i -> Optional.ofNullable(events.get(i.<UUID>getArgument(0))));
     }
@@ -52,6 +53,34 @@ class OutboxRelayTest {
         OutboxEvent e = OutboxEvent.pending("User", "1", OutboxEvents.USER_REGISTERED, "{}", Instant.now());
         events.put(e.getId(), e);
         return e;
+    }
+
+    @Test
+    @DisplayName("the schedule sweeps once, then leaves the database alone while nothing is due")
+    void poll_skipsTheDatabaseWhileIdle() {
+        lenient().when(repository.lockNextBatch(any(), anyInt())).thenReturn(List.of());
+
+        relay.poll();
+        relay.poll();
+        relay.poll();
+
+        verify(repository, times(1)).lockNextBatch(any(), anyInt());
+        verify(repository, times(1)).nextAttemptAt();
+    }
+
+    @Test
+    @DisplayName("a failed send brings the next sweep forward to its retry time")
+    void failedSend_schedulesItsRetry() throws Exception {
+        OutboxEvent failing = event();
+        when(repository.lockNextBatch(any(), anyInt())).thenReturn(List.of(failing)).thenReturn(List.of());
+        doThrow(new RuntimeException("SMTP down")).when(transport).send(any());
+        relay.poll(); // sweeps; the send fails and is scheduled to retry in a few seconds
+
+        // Nothing is due yet, but the retry is: well before the hourly idle sweep
+        await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
+            relay.poll();
+            verify(repository, atLeast(2)).lockNextBatch(any(), anyInt());
+        });
     }
 
     private double relayed(String outcome) {

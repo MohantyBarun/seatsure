@@ -45,15 +45,29 @@ class LiveSeatMapIntegrationTest {
     @Autowired private SeatChangeListener listener;
     @Autowired private JdbcTemplate jdbc;
 
-    /** Collects "event:"/"data:" lines from the stream on a background thread. */
+    private final List<InputStream> openStreams = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @org.junit.jupiter.api.AfterEach
+    void closeStreams() throws Exception {
+        for (InputStream body : openStreams) {
+            body.close();
+        }
+        openStreams.clear();
+    }
+
+    /**
+     * Collects "event:"/"data:" lines from the stream on a background thread. Returns once the
+     * stream says "ready", which the server only sends once it is listening for changes: the
+     * listener connects on demand, so this is also what wakes it.
+     */
     private BlockingQueue<String> open(Long showId) throws Exception {
-        await().atMost(Duration.ofSeconds(15)).until(listener::isListening);
         HttpResponse<InputStream> response = HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/shows/" + showId + "/seats/stream"))
                         .header("Accept", "text/event-stream").build(),
                 HttpResponse.BodyHandlers.ofInputStream());
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.headers().firstValue("Content-Type")).get().asString().startsWith("text/event-stream");
+        openStreams.add(response.body());
         BlockingQueue<String> lines = new LinkedBlockingQueue<>();
         Thread.ofVirtual().start(() -> {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
@@ -67,7 +81,8 @@ class LiveSeatMapIntegrationTest {
                 // stream closed at the end of the test
             }
         });
-        assertThat(lines.poll(10, TimeUnit.SECONDS)).isEqualTo("event:ready");
+        assertThat(lines.poll(15, TimeUnit.SECONDS)).isEqualTo("event:ready");
+        assertThat(listener.isListening()).as("ready only once LISTEN is active").isTrue();
         lines.poll(5, TimeUnit.SECONDS); // its data line
         return lines;
     }
@@ -119,5 +134,30 @@ class LiveSeatMapIntegrationTest {
 
         assertThat(stream.poll(20, TimeUnit.SECONDS)).isEqualTo("event:reload");
         await().atMost(Duration.ofSeconds(15)).until(listener::isListening);
+    }
+
+    @Test
+    @DisplayName("the listener holds a database connection only while a seat map is open")
+    void listener_onlyConnectedWhileWatched() throws Exception {
+        ShowFixture show = fixtures.show(1, 4);
+        open(show.showId());
+        assertThat(listenConnections()).isEqualTo(1);
+
+        closeStreams();
+
+        // The server notices a closed stream on a heartbeat write (every 20 s), then waits the idle grace
+        await().atMost(Duration.ofSeconds(70)).until(() -> !listener.isListening());
+        await().atMost(Duration.ofSeconds(10)).until(() -> listenConnections() == 0);
+
+        // The next seat map brings it back
+        BlockingQueue<String> stream = open(show.showId());
+        holds.create(fixtures.customer().user().id(), show.showId(), show.seatIds().subList(0, 1));
+        assertThat(stream.poll(10, TimeUnit.SECONDS)).isEqualTo("event:seats");
+    }
+
+    private int listenConnections() {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM pg_stat_activity WHERE query ILIKE 'LISTEN %' AND pid <> pg_backend_pid()
+                """, Integer.class);
     }
 }
