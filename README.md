@@ -68,7 +68,11 @@ flowchart LR
 ### Best seats ("pick for me")
 - Say how many seats you need (and optionally a category). Every block of that many free seats **side by side in one row** is scored out of 100: **45%** for how central it is, **45%** for how close the row is to about two-thirds of the way back from the screen, and **10%** for not leaving a single free seat stranded beside it. An aisle or a taken seat breaks a block.
 - `GET /shows/{id}/best-seats` returns the best block of up to three rows with the score and the reasons, and the page shows them on the seat map. `POST /shows/{id}/holds/best` **picks and holds in one request**.
-- **Choosing takes no locks.** The hall is read, the best block is chosen, and the ordinary hold then locks exactly those seats and checks them. If another customer took one in between, that transaction rolls back and the server reads the hall again and takes the next best block (up to 5 times). So it follows the same locking rules as picking by hand: it can't hold a seat twice and can't deadlock.
+- **Requests for the same show queue instead of racing.** If they raced, everyone in a burst would read the same hall and choose the same best pair, and all but one would lose (the load test caught exactly that). So choosing and holding happen together under a per-show lock: each customer reads the hall after the previous one has committed and gets the best block still free. First come, best seats.
+  - A **fair in-JVM lock** (64 stripes by show) is taken **before** borrowing a database connection, so waiters don't tie up the pool of 5 and the seat map keeps loading for everyone else. It gives up after 15 s with a 409.
+  - Then a **PostgreSQL advisory lock** for the show (`pg_advisory_xact_lock`), first in the transaction, so requests on other app instances queue too. Only this code takes it, and always first, so it can't take part in a deadlock.
+  - The ordinary hold then locks and checks exactly the chosen seats, as for any hold. Seats picked by hand don't queue, so a best-seat request can still lose one; it rolls back and chooses again (up to 3 times).
+  - **Trade-off:** a burst for one show is served one hold at a time. That's cheap on a local database; on Neon each hold costs several network round trips, so a large crowd for a single show waits longer.
 - The scoring is a pure function (`BestSeatPicker`) with no database or framework in it, so it is unit-tested directly.
 
 ### Payments and webhooks
@@ -249,7 +253,7 @@ CI runs everything on every push and PR, and **fails if any test is skipped**, s
 | Area | What's covered |
 |---|---|
 | Concurrency (Testcontainers PostgreSQL) | 30 customers racing for one seat → one winner; overlapping seat sets → no double holds, no deadlocks; all-or-nothing holds; holds replaced and expired; show cancellation racing holds |
-| Best seats | Scoring rules as plain unit tests (centre, distance, aisles, stranded seats, category filter); suggestions and one-click hold over HTTP; 20 customers asking for the best pair at the same moment each get their own pair, side by side |
+| Best seats | Scoring rules as plain unit tests (centre, distance, aisles, stranded seats, category filter); the queue and retry rules with the database mocked; suggestions and one-click hold over HTTP; 20 customers asking for the best pair at the same moment all get their own pair on the first request |
 | Payments | Unsigned or forged webhooks refused, redelivered events processed once, a second success for a paid payment ignored, money arriving after the hold lapsed refunded, a wrong amount refunded (exactly what was taken) and never booked |
 | Live seat map | A hold shows up on open seat maps and a failed hold never does; a cancelled show tells maps to reload; killing the `LISTEN` connection makes open maps reload once it's back |
 | Waitlist | Only for sold-out shows; freed seats offered to the first customer whose request fits, passing to the next if unpaid; cancelled bookings' seats go to the queue |
@@ -270,9 +274,9 @@ A [k6](https://k6.io) script ([`loadtest/`](loadtest)) runs in GitHub Actions ag
 | Best seats | 100 customers press "hold the best seats for me" at the same moment |
 | Checkout | 400 bookings end to end (hold, pay, signed webhook, ticket), 40 at a time |
 
-**Correctness ([run of 2026-11-17](https://github.com/MohantyBarun/seatsure/actions/runs/44065277233)):** 5,821 requests, 0 unexpected statuses, 5,100/5,100 checks passed.
-- **Stampede:** 43 customers won a pair and 257 were told their seats were just taken. 43 active holds and 86 held seats in the database: nothing held twice.
-- **Best seats:** all 100 customers got two seats side by side; 100 holds and 200 held seats in the database.
+**Correctness ([run of 2026-11-17](https://github.com/MohantyBarun/seatsure/actions/runs/44068352128)):** 6,057 requests, 0 unexpected statuses, 5,101/5,101 checks passed.
+- **Stampede:** 44 customers won a pair and 256 were told their seats were just taken. 44 active holds and 88 held seats in the database: nothing held twice.
+- **Best seats:** all 100 customers got two seats side by side **on their first request**; 100 holds and 200 held seats in the database.
 - **Checkout:** 400 tickets, 400 confirmed bookings, 800 booked seats, 0 refunds.
 - **Everywhere:** 0 seats sold twice, 0 held seats without an active hold, 0 booked seats without a booking.
 
@@ -280,19 +284,20 @@ A [k6](https://k6.io) script ([`loadtest/`](loadtest)) runs in GitHub Actions ag
 
 | Request | Median | p95 | p99 |
 |---|---:|---:|---:|
-| Seat map | 5 | 6 | 8 |
-| Best-seat suggestions | 3 | 5 | 39 |
-| City home / showtimes | 2 / 4 | 3 / 5 | 7 / 7 |
-| Hold 2 seats, 300 customers at once | 1,638 | 1,901 | 1,922 |
-| Hold the best seats, 100 at once (per request) | 866 | 1,801 | 2,066 |
-| Checkout: hold / start payment | 135 / 125 | 306 / 279 | 402 / 324 |
-| Checkout: payment approved → ticket | 591 | 1,389 | 1,798 |
-| Checkout: hold → ticket, whole flow | 923 | 1,790 | 2,220 |
+| Seat map | 7 | 16 | 114 |
+| Best-seat suggestions | 5 | 26 | 180 |
+| City home / showtimes | 3 / 6 | 13 / 25 | 99 / 163 |
+| Hold 2 seats, 300 customers at once | 1,996 | 2,836 | 2,888 |
+| Hold the best seats, 100 at once | 745 | 1,139 | 1,167 |
+| Checkout: hold / start payment | 276 / 227 | 428 / 489 | 570 / 595 |
+| Checkout: payment approved → ticket | 881 | 2,313 | 3,015 |
+| Checkout: hold → ticket, whole flow | 1,506 | 3,104 | 3,595 |
 
 **Reading these numbers:**
-- **The stampede is a queue, by design.** 300 holds go through row locks and 5 database connections, so they are served one after another: all 300 answered within about 2 seconds, roughly 150 holds a second.
+- **The stampede is a queue, by design.** 300 holds go through row locks and 5 database connections, so they are served one after another: all 300 were answered within about 3 seconds.
 - **Payment → ticket is mostly waiting for the gateway.** The mock gateway delivers webhooks every 2 seconds, so that step is about the delivery schedule, not processing time.
-- **"Hold the best seats" herds.** Every customer in a burst computes the same best pair, and the server gives up after losing 5 races in a row. In this run 102 of the 202 requests were "seats are going fast, try again" answers that the client retried (all 100 customers still got a pair).
+- **The load test found a bug, and the fix is measured.** In the [first run](https://github.com/MohantyBarun/seatsure/actions/runs/44065277233), every customer in the best-seats burst chose the same pair and raced for it: 102 of 202 requests came back "seats are going fast, try again". With the per-show queue it took exactly 100 requests for 100 customers, none were asked to retry, and p95 fell from 1,801 ms to 1,139 ms. The report now fails if any customer is told to try again.
+- **Single runs vary.** GitHub's shared runners differ from run to run: between the two runs, the scenarios the fix didn't touch also moved (stampede p95 1,901 → 2,836 ms, seat map p99 8 → 114 ms). Compare runs on the same scenario with that in mind.
 - **This is a best case for this hardware, not production.** The database is on the same machine (Neon is across a network) and the app has a full CPU core (Render's free tier gives 0.1). Rate limiting is off, because every request comes from one address.
 
 Run it yourself from the Actions tab (**Load test → Run workflow**); it also runs on PRs that change the load test.
@@ -312,4 +317,4 @@ Run it yourself from the Actions tab (**Load test → Run workflow**); it also r
 Optional free add-ons (everything works without them): [Upstash](https://upstash.com) Redis, [CloudAMQP](https://www.cloudamqp.com) RabbitMQ, [Brevo](https://www.brevo.com) SMTP, and any Prometheus / Grafana Cloud scraper.
 
 ## 🔮 Upcoming
-- Spread "hold the best seats" bursts across the top few blocks, so a crowd doesn't all race for the same pair
+- Run the load test against the deployed stack (Render + Neon) to measure the network cost the local run leaves out
