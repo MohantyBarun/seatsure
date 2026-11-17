@@ -26,6 +26,16 @@ public interface ShowRepository extends JpaRepository<Show, Long> {
     Optional<Long> lockForShare(@Param("id") Long id);
 
     /**
+     * Queues "pick the best seats for me" requests for one show, across every app instance: a
+     * transaction-scoped advisory lock, released at commit or rollback. The key is (namespace, show
+     * id folded into an int); two shows that fold to the same int only share a queue, which is
+     * harmless. Nothing else takes this lock, so it can't take part in a deadlock.
+     */
+    @Query(value = "SELECT 1 FROM pg_advisory_xact_lock(:namespace, CAST(:showId % 2147483647 AS integer))",
+            nativeQuery = true)
+    Integer lockBestSeatQueue(@Param("namespace") int namespace, @Param("showId") Long showId);
+
+    /**
      * FOR NO KEY UPDATE, not FOR UPDATE: it conflicts with FOR SHARE (new holds and payments wait),
      * but not with the FOR KEY SHARE lock that inserting a row referencing the show takes. With FOR
      * UPDATE, a cancellation waiting on a booking that is itself inserting a waitlist hold for this

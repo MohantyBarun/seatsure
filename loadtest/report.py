@@ -62,6 +62,7 @@ def main(summary_path, invariants_path):
          db["stampede_seats_held"]),
         ("Stampede: every customer got an answer (won + told taken = 300)", 300, won + lost),
         ("Best seats: all 100 customers got a pair", 100, best_won),
+        ("Best seats: times a customer was told to try again", 0, count("best_seats_client_retries")),
         ("Best seats: active holds in the database", best_won, db["best_active_holds"]),
         ("Best seats: seats marked held = 2 x holds", 2 * best_won, db["best_seats_held"]),
         ("Checkout: tickets issued = confirmed bookings", booked, db["checkout_confirmed_bookings"]),
