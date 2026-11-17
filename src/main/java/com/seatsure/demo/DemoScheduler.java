@@ -41,12 +41,32 @@ public class DemoScheduler implements ApplicationRunner {
         AtomicBoolean ran = new AtomicBoolean();
         locks.executeWithLock((Runnable) () -> {
             ran.set(true);
-            // Movies are fetched (from TMDB, if configured) only when they'll be used, before the seed transaction
-            demo.seedIfEmptyOrStale(demo.needsSeed() ? catalogs.load() : null);
+            seedOnStartup();
         }, new LockConfiguration(clock.instant(), "demo-seed", SEED_LOCK_AT_MOST, Duration.ZERO));
         if (!ran.get()) {
             log.info("Demo mode: another instance is seeding; skipping");
         }
+    }
+
+    /**
+     * Movies are fetched (from TMDB, if configured) only when they'll be used, and before the seed
+     * transaction. If a TMDB token has just been added, the built-in movies are swapped for real ones
+     * now rather than at the next reset; if TMDB can't be reached, the demo is left as it is.
+     */
+    private void seedOnStartup() {
+        if (demo.needsSeed()) {
+            demo.seedIfEmptyOrStale(catalogs.load());
+            return;
+        }
+        if (catalogs.realMoviesConfigured() && demo.showsBuiltInMovies()) {
+            DemoCatalog catalog = catalogs.load();
+            if (!catalog.builtIn()) {
+                log.info("Demo mode: TMDB is configured; replacing the built-in movies with real ones");
+                demo.reset(catalog);
+                return;
+            }
+        }
+        demo.seedIfEmptyOrStale(null); // nothing to seed; makes sure the demo accounts exist
     }
 
     /** lockAtLeastFor: an instance whose clock is a little behind can't start a second reset afterwards. */

@@ -216,6 +216,17 @@ public class DemoDataService {
         return enabled && (cinemas.count() == 0 || isStale());
     }
 
+    /**
+     * True when the demo has movies but none came from TMDB: the built-in ones are showing. Once a
+     * TMDB token is added, startup swaps them for real movies instead of waiting for the next reset.
+     */
+    @Transactional(readOnly = true)
+    public boolean showsBuiltInMovies() {
+        return enabled && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM movies) AND NOT EXISTS (SELECT 1 FROM movies WHERE tmdb_id IS NOT NULL)",
+                Boolean.class));
+    }
+
     private DemoCatalog catalogOrBuiltIn(DemoCatalog catalog) {
         return catalog != null ? catalog : builtInCatalog(LocalDate.now(clock.withZone(zone)));
     }

@@ -47,6 +47,11 @@ public class DemoCatalogSource {
         this.imageBaseUrl = imageBaseUrl;
     }
 
+    /** True when a TMDB token is set, so {@link #load} will try for real movies. */
+    public boolean realMoviesConfigured() {
+        return tmdb.isConfigured();
+    }
+
     public DemoCatalog load() {
         LocalDate today = LocalDate.now(clock.withZone(zone));
         if (!tmdb.isConfigured()) {

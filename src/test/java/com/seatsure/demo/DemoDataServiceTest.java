@@ -91,6 +91,7 @@ class DemoDataServiceTest {
 
         demo.seedIfEmptyOrStale(new DemoCatalog(nowShowing, List.of(), false));
 
+        assertThat(demo.showsBuiltInMovies()).isFalse();
         assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(6);
         assertThat(count("SELECT COUNT(*) FROM shows")).isEqualTo(16 * 4 * 4);
         assertThat(jdbc.queryForMap("SELECT rating, vote_count, backdrop_url, poster_url FROM movies WHERE title = 'Hindi Hit'"))
@@ -108,6 +109,8 @@ class DemoDataServiceTest {
     void seed_isIdempotent() {
         demo.seedIfEmptyOrStale();
         demo.seedIfEmptyOrStale();
+
+        assertThat(demo.showsBuiltInMovies()).as("seeded with the built-in movies").isTrue();
 
         assertThat(count("SELECT COUNT(*) FROM cinemas")).isEqualTo(8);
         assertThat(count("SELECT COUNT(*) FROM movies")).isEqualTo(10);
